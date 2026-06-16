@@ -3,9 +3,11 @@ package xray
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/pasarguard/node/backend/xray/api"
 	"github.com/pasarguard/node/common"
@@ -156,13 +158,53 @@ func (x *Xray) SyncUser(ctx context.Context, user *common.User) error {
 }
 
 func (x *Xray) SyncUsers(ctx context.Context, users []*common.User) error {
-	x.config.syncUsers(users)
-	if err := x.Restart(); err != nil {
+	candidate, err := x.config.Clone()
+	if err != nil {
 		return err
 	}
+
+	candidate.syncUsers(users)
+	return x.applyConfigWithRestart(ctx, candidate)
+}
+
+func (x *Xray) applyConfigWithRestart(ctx context.Context, candidate *Config) error {
+	previous := x.config
+
+	if err := x.restartCoreWithConfig(candidate); err != nil {
+		if restoreErr := x.restorePreviousConfig(previous); restoreErr != nil {
+			return fmt.Errorf("%w; failed to restore previous xray config: %v", err, restoreErr)
+		}
+		return err
+	}
+
+	if err := x.checkXrayStatus(ctx); err != nil {
+		if restoreErr := x.restorePreviousConfig(previous); restoreErr != nil {
+			return fmt.Errorf("%w; failed to restore previous xray config: %v", err, restoreErr)
+		}
+		return err
+	}
+
+	x.setConfig(candidate)
+	return nil
+}
+
+func (x *Xray) restorePreviousConfig(previous *Config) error {
+	if previous == nil {
+		return errors.New("previous xray config is nil")
+	}
+
+	log.Println("restoring previous xray config after failed restart")
+	if err := x.restartCoreWithConfig(previous); err != nil {
+		return err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 	if err := x.checkXrayStatus(ctx); err != nil {
 		return err
 	}
+
+	x.setConfig(previous)
 	return nil
 }
 
@@ -201,12 +243,11 @@ func (x *Xray) UpdateUsers(ctx context.Context, users []*common.User) error {
 }
 
 func (x *Xray) UpdateUsersAndRestart(ctx context.Context, users []*common.User) error {
-	x.config.updateUsers(users)
-	if err := x.Restart(); err != nil {
+	candidate, err := x.config.Clone()
+	if err != nil {
 		return err
 	}
-	if err := x.checkXrayStatus(ctx); err != nil {
-		return err
-	}
-	return nil
+
+	candidate.updateUsers(users)
+	return x.applyConfigWithRestart(ctx, candidate)
 }

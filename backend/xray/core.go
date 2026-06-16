@@ -274,6 +274,9 @@ func (c *Core) handleProcessExit(cmd *exec.Cmd, err error) {
 	message := "xray process exited unexpectedly"
 	if err != nil {
 		message = fmt.Sprintf("%s: %v", message, err)
+		if strings.Contains(strings.ToLower(err.Error()), "signal: killed") {
+			message += " (process was killed externally; check container/system OOM and memory limits)"
+		}
 	}
 
 	log.Println(message)
