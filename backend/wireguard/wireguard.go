@@ -183,7 +183,7 @@ func newWithManagerFactory(cfg *config.Config, wgConfig *Config, users []*common
 	}
 
 	// After the tunnel exists, apply optional host routing so nft iifname matches the real interface.
-	wg.hostRouting = applyLinuxHostRouting(wgConfig.InterfaceName)
+	wg.hostRouting = applyLinuxHostRouting(cfg, wgConfig.InterfaceName)
 
 	wg.manager = manager
 

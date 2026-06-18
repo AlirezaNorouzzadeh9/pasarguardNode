@@ -25,6 +25,14 @@ type Config struct {
 	StartupLogTailSize          int
 	StatsUpdateIntervalSeconds  int
 	StatsCleanupIntervalSeconds int
+
+	// WireGuard host routing (Linux). See .env.example for semantics.
+	WGHostRouting        bool
+	WGNATOutputInterface string
+	WGNATEgressOnly      bool
+	WGNATDisable         bool
+	WGRouteTable         string
+	WGRouteOutInterface  string
 }
 
 func Load() (*Config, error) {
@@ -46,6 +54,13 @@ func Load() (*Config, error) {
 		StartupLogTailSize:          GetEnvAsInt("STARTUP_LOG_TAIL_SIZE", 200),
 		StatsUpdateIntervalSeconds:  GetEnvAsInt("STATS_UPDATE_INTERVAL_SECONDS", 10),
 		StatsCleanupIntervalSeconds: GetEnvAsInt("STATS_CLEANUP_INTERVAL_SECONDS", 300),
+
+		WGHostRouting:        GetEnvAsBool("PG_NODE_WG_HOST_ROUTING", true),
+		WGNATOutputInterface: GetEnv("PG_NODE_WG_NAT_OUTPUT_INTERFACE", ""),
+		WGNATEgressOnly:      GetEnvAsBool("PG_NODE_WG_NAT_EGRESS_ONLY", true),
+		WGNATDisable:         GetEnvAsBool("PG_NODE_WG_NAT_DISABLE", false),
+		WGRouteTable:         GetEnv("PG_NODE_WG_ROUTE_TABLE", ""),
+		WGRouteOutInterface:  GetEnv("PG_NODE_WG_ROUTE_OUT_INTERFACE", ""),
 	}
 
 	if cfg.LogBufferSize <= 0 {
