@@ -2,7 +2,6 @@ package rest
 
 import (
 	"log"
-	"net"
 	"net/http"
 
 	"github.com/pasarguard/node/common"
@@ -13,6 +12,9 @@ func (s *Service) Base(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Service) Start(w http.ResponseWriter, r *http.Request) {
+	s.LockControl()
+	defer s.UnlockControl()
+
 	data := &common.Backend{}
 
 	if err := common.ReadProtoBody(r.Body, data); err != nil {
@@ -20,13 +22,17 @@ func (s *Service) Start(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ip, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
+	ip, ok := requestClientIP(r)
+	if !ok {
 		http.Error(w, "unknown ip", http.StatusServiceUnavailable)
 		return
 	}
 
 	if s.Backend() != nil {
+		if !s.IsCurrentClient(ip) {
+			http.Error(w, "node is controlled by another client", http.StatusForbidden)
+			return
+		}
 		log.Println("New connection from ", ip, " core control access was taken away from previous client.")
 		s.Disconnect()
 	}
@@ -42,6 +48,9 @@ func (s *Service) Start(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Service) Stop(w http.ResponseWriter, _ *http.Request) {
+	s.LockControl()
+	defer s.UnlockControl()
+
 	s.Disconnect()
 
 	common.SendProtoResponse(w, &common.Empty{})

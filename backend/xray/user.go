@@ -120,6 +120,9 @@ func isActiveInbound(inbound *Inbound, inbounds []string, settings api.ProxySett
 }
 
 func (x *Xray) SyncUser(ctx context.Context, user *common.User) error {
+	x.syncMu.Lock()
+	defer x.syncMu.Unlock()
+
 	proxySetting, err := setupUserAccount(user)
 	if err != nil {
 		return err
@@ -158,6 +161,9 @@ func (x *Xray) SyncUser(ctx context.Context, user *common.User) error {
 }
 
 func (x *Xray) SyncUsers(ctx context.Context, users []*common.User) error {
+	x.syncMu.Lock()
+	defer x.syncMu.Unlock()
+
 	candidate, err := x.config.Clone()
 	if err != nil {
 		return err
@@ -209,6 +215,9 @@ func (x *Xray) restorePreviousConfig(previous *Config) error {
 }
 
 func (x *Xray) UpdateUsers(ctx context.Context, users []*common.User) error {
+	x.syncMu.Lock()
+	defer x.syncMu.Unlock()
+
 	handler := x.handler
 	inboundByTag, updates := x.config.buildInboundUpdates(users)
 	var errMessage string
@@ -243,6 +252,9 @@ func (x *Xray) UpdateUsers(ctx context.Context, users []*common.User) error {
 }
 
 func (x *Xray) UpdateUsersAndRestart(ctx context.Context, users []*common.User) error {
+	x.syncMu.Lock()
+	defer x.syncMu.Unlock()
+
 	candidate, err := x.config.Clone()
 	if err != nil {
 		return err

@@ -20,6 +20,7 @@ type Xray struct {
 	metricPort int
 	cancelFunc context.CancelFunc
 	mu         sync.RWMutex
+	syncMu     sync.Mutex
 }
 
 func New(ctx context.Context, xrayConfig *Config, users []*common.User, apiPort, metricPort int, cfg *config.Config) (*Xray, error) {

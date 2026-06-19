@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net"
 	"strings"
 
 	"github.com/google/uuid"
@@ -14,6 +15,20 @@ import (
 	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 )
+
+func clientIPFromContext(ctx context.Context) string {
+	if p, ok := peer.FromContext(ctx); ok {
+		if tcpAddr, ok := p.Addr.(*net.TCPAddr); ok {
+			return tcpAddr.IP.String()
+		}
+		addr := p.Addr.String()
+		if host, _, err := net.SplitHostPort(addr); err == nil {
+			return host
+		}
+		return addr
+	}
+	return ""
+}
 
 func validateApiKey(ctx context.Context, s *Service) error {
 	// Extract metadata
@@ -55,6 +70,47 @@ func validateApiKeyMiddleware(s *Service) grpc.UnaryServerInterceptor {
 		}
 
 		return handler(ctx, req)
+	}
+}
+
+func validateCurrentClient(ctx context.Context, s *Service) error {
+	clientIP := clientIPFromContext(ctx)
+	if clientIP == "" {
+		return status.Errorf(codes.PermissionDenied, "unknown client ip")
+	}
+	if !s.IsCurrentClient(clientIP) {
+		return status.Errorf(codes.PermissionDenied, "node is controlled by another client")
+	}
+	return nil
+}
+
+func validateCurrentClientMiddleware(s *Service) grpc.UnaryServerInterceptor {
+	return func(
+		ctx context.Context,
+		req interface{},
+		info *grpc.UnaryServerInfo,
+		handler grpc.UnaryHandler,
+	) (interface{}, error) {
+		if err := validateCurrentClient(ctx, s); err != nil {
+			return nil, err
+		}
+
+		return handler(ctx, req)
+	}
+}
+
+func validateCurrentClientStreamMiddleware(s *Service) grpc.StreamServerInterceptor {
+	return func(
+		srv interface{},
+		ss grpc.ServerStream,
+		info *grpc.StreamServerInfo,
+		handler grpc.StreamHandler,
+	) error {
+		if err := validateCurrentClient(ss.Context(), s); err != nil {
+			return err
+		}
+
+		return handler(srv, ss)
 	}
 }
 
@@ -211,6 +267,7 @@ func ConditionalMiddleware(s *Service) grpc.UnaryServerInterceptor {
 		interceptors = append(interceptors, validateApiKeyMiddleware(s))
 
 		if backendMethods[info.FullMethod] {
+			interceptors = append(interceptors, validateCurrentClientMiddleware(s))
 			interceptors = append(interceptors, CheckBackendMiddleware(s))
 		}
 
@@ -233,6 +290,7 @@ func ConditionalStreamMiddleware(s *Service) grpc.StreamServerInterceptor {
 		interceptors = append(interceptors, validateApiKeyStreamMiddleware(s))
 
 		if backendMethods[info.FullMethod] {
+			interceptors = append(interceptors, validateCurrentClientStreamMiddleware(s))
 			interceptors = append(interceptors, CheckBackendStreamMiddleware(s))
 		}
 

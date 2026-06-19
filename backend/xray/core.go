@@ -123,6 +123,12 @@ func (c *Core) Started() bool {
 	return false
 }
 
+func (c *Core) Stopping() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.stopping
+}
+
 func collectUnixSocketPaths(cfg *Config) []string {
 	if cfg == nil {
 		return nil
