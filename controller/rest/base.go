@@ -37,7 +37,7 @@ func (s *Service) Start(w http.ResponseWriter, r *http.Request) {
 		s.Disconnect()
 	}
 
-	if err = s.StartBackend(r.Context(), data); err != nil {
+	if err := s.StartBackend(r.Context(), data); err != nil {
 		http.Error(w, err.Error(), http.StatusServiceUnavailable)
 		return
 	}
