@@ -3,6 +3,7 @@ package openvpn
 import (
 	"context"
 	"errors"
+	"log"
 	"runtime"
 	"time"
 
@@ -42,6 +43,12 @@ func (o *OpenVPN) collectStats() {
 		return
 	}
 	rows := o.mgmt.requestStatus(5 * time.Second)
+	for _, r := range rows {
+		log.Printf("openvpn-stats: row cn=%s cid=%s rx=%d tx=%d", r.CommonName, r.ClientID, r.BytesReceived, r.BytesSent)
+	}
+	if len(rows) == 0 {
+		log.Printf("openvpn-stats: status returned 0 rows")
+	}
 
 	// Sum growth per CN across all live sessions since the last poll.
 	perCN := make(map[string]*clientStatus)
