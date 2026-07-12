@@ -2,6 +2,7 @@ package openvpn
 
 import (
 	"fmt"
+	"log"
 	"time"
 )
 
@@ -12,6 +13,7 @@ func (o *OpenVPN) emitLogf(severity, format string, args ...any) {
 }
 
 func (o *OpenVPN) emitLog(severity, message string) {
+	log.Printf("openvpn-backend [%s] %s", severity, message)
 	o.mu.RLock()
 	ch := o.logChan
 	o.mu.RUnlock()

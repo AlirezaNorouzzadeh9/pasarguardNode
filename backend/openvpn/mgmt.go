@@ -103,9 +103,7 @@ func (m *mgmtClient) run() {
 			return
 		}
 		trimmed := strings.TrimRight(line, "\r\n")
-		if strings.HasPrefix(trimmed, ">CLIENT:") {
-			log.Printf("openvpn-mgmt: recv %q", trimmed)
-		}
+		log.Printf("openvpn-mgmt: recv %q", trimmed)
 		m.handleLine(trimmed)
 	}
 }
