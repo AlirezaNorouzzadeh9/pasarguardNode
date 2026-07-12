@@ -3,7 +3,6 @@ package openvpn
 import (
 	"bufio"
 	"fmt"
-	"log"
 	"net"
 	"strconv"
 	"strings"
@@ -99,14 +98,9 @@ func (m *mgmtClient) run() {
 	for {
 		line, err := rw.Reader.ReadString('\n')
 		if err != nil {
-			log.Printf("openvpn-mgmt: reader closed: %v", err)
 			return
 		}
-		trimmed := strings.TrimRight(line, "\r\n")
-		if strings.HasPrefix(trimmed, ">CLIENT:") {
-			log.Printf("openvpn-mgmt: recv %q", trimmed)
-		}
-		m.handleLine(trimmed)
+		m.handleLine(strings.TrimRight(line, "\r\n"))
 	}
 }
 
@@ -165,10 +159,10 @@ func (m *mgmtClient) finishConnect() {
 	serial := env["tls_serial_0"]
 	if m.decider != nil && m.decider.authorize(cn, serial) {
 		m.send(fmt.Sprintf("client-auth-nt %s %s", cid, kid))
-		log.Printf("openvpn-mgmt: AUTH cn=%s serial=%s cid=%s kid=%s", cn, serial, cid, kid)
+		m.logf("openvpn: authorized cn=%s", cn)
 	} else {
 		m.send(fmt.Sprintf("client-deny %s %s \"unauthorized\"", cid, kid))
-		log.Printf("openvpn-mgmt: DENY cn=%s serial=%s cid=%s kid=%s", cn, serial, cid, kid)
+		m.logf("openvpn: denied cn=%s serial=%s", cn, serial)
 	}
 }
 
