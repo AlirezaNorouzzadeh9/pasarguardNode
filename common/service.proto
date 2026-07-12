@@ -16,6 +16,8 @@ message BaseInfoResponse {
 enum BackendType {
   XRAY = 0;
   WIREGUARD = 1;
+  OPENVPN = 2;
+  IKEV2 = 3;
 }
 
 message Backend {
@@ -137,6 +139,20 @@ message Hysteria {
     string auth = 1;
 }
 
+message Openvpn {
+    // Decimal string of the client's certificate serial number.
+    // OpenVPN exposes the peer certificate serial as a decimal string
+    // (tls_serial_0), so this must match that representation exactly.
+    string serial = 1;
+    // Hex-encoded SHA-256 fingerprint of the client certificate (DER).
+    string fingerprint = 2;
+}
+
+message Ikev2 {
+    string username = 1;
+    string password = 2;
+}
+
 message Proxy {
     Vmess vmess = 1;
     Vless vless = 2;
@@ -144,6 +160,8 @@ message Proxy {
     Shadowsocks shadowsocks = 4;
     Wireguard wireguard = 5;
     Hysteria hysteria = 6;
+    Openvpn openvpn = 7;
+    Ikev2 ikev2 = 8;
 }
 
 message User {
