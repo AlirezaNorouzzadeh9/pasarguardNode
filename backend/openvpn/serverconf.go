@@ -91,8 +91,12 @@ func (c *Config) renderServerConf() (string, error) {
 		fmt.Fprintf(&b, "push %q\n", line)
 	}
 	// Authorize connecting clients over the management interface (no external scripts).
+	// auth-user-pass-optional lets cert-only clients through: management-client-auth
+	// otherwise demands a username/password, which our certificate-based clients
+	// don't send. Authorization is then decided by CN+serial in the mgmt handler.
 	fmt.Fprintf(&b, "management %s unix\n", c.mgmtSocketPath())
 	b.WriteString("management-client-auth\n")
+	b.WriteString("auth-user-pass-optional\n")
 	b.WriteString("verify-client-cert require\n")
 	b.WriteString("status-version 3\n")
 	fmt.Fprintf(&b, "status %s 5\n", filepath.Join(c.workDir, "status.log"))
