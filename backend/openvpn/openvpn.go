@@ -41,6 +41,11 @@ type OpenVPN struct {
 	users        *userStore
 	mgmt         *mgmtClient
 	statsTracker *stats.Tracker
+	// Node-level (outbound) counters, kept separate from the per-user tracker so
+	// the panel's node-usage poll (Outbounds) does not drain per-user deltas.
+	interfaceStats *stats.InterfaceCountersTracker
+	totalRx        int64
+	totalTx        int64
 
 	// per-session cumulative byte counters keyed by ClientID, for delta feeding.
 	sessionSeen map[string]clientStatus
@@ -81,6 +86,7 @@ func New(cfg *config.Config, ovConfig *Config, users []*common.User) (*OpenVPN, 
 		cfg:            cfg,
 		users:          newUserStore(ovConfig.InboundTag),
 		statsTracker:   stats.New(),
+		interfaceStats: stats.NewInterfaceCountersTracker(),
 		sessionSeen:    make(map[string]clientStatus),
 		waitDone:       make(chan struct{}),
 		logChan:        make(chan string, cfg.LogBufferSize),

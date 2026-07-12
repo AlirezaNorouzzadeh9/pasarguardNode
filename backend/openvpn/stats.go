@@ -3,7 +3,6 @@ package openvpn
 import (
 	"context"
 	"errors"
-	"log"
 	"runtime"
 	"time"
 
@@ -43,12 +42,6 @@ func (o *OpenVPN) collectStats() {
 		return
 	}
 	rows := o.mgmt.requestStatus(5 * time.Second)
-	for _, r := range rows {
-		log.Printf("openvpn-stats: row cn=%s cid=%s rx=%d tx=%d", r.CommonName, r.ClientID, r.BytesReceived, r.BytesSent)
-	}
-	if len(rows) == 0 {
-		log.Printf("openvpn-stats: status returned 0 rows")
-	}
 
 	// Sum growth per CN across all live sessions since the last poll.
 	perCN := make(map[string]*clientStatus)
@@ -111,6 +104,9 @@ func (o *OpenVPN) collectStats() {
 			Tx:         cum.BytesSent,
 			EndpointIP: extractIP(growth.RealAddress),
 		})
+		// Node-level running totals (separate from the per-user tracker).
+		o.totalRx += growth.BytesReceived
+		o.totalTx += growth.BytesSent
 	}
 	o.mu.Unlock()
 
@@ -168,8 +164,15 @@ func (o *OpenVPN) GetStats(ctx context.Context, request *common.StatRequest) (*c
 	case common.StatType_UsersStat:
 		return o.statsTracker.GetUsersStats(ctx, request.GetReset_()), nil
 	case common.StatType_Outbound, common.StatType_Outbounds:
-		// No per-outbound concept for OpenVPN; aggregate all users as node traffic.
-		return o.statsTracker.GetUsersStats(ctx, request.GetReset_()), nil
+		// Node-level traffic = sum of all user traffic, tracked separately so this
+		// poll does not drain the per-user deltas consumed by UsersStat.
+		o.mu.Lock()
+		totalRx, totalTx := o.totalRx, o.totalTx
+		o.mu.Unlock()
+		dRx, dTx := o.interfaceStats.Delta(totalRx, totalTx, request.GetReset_())
+		return &common.StatResponse{
+			Stats: stats.BuildInterfaceStats(o.config.InboundTag, "outbound", dRx, dTx),
+		}, nil
 	default:
 		return nil, errors.New("unsupported stat type for openvpn")
 	}
