@@ -183,6 +183,15 @@ func (o *OpenVPN) stopProcess() {
 	}
 }
 
+// CheckDeps reports whether the openvpn binary this backend needs is installed,
+// so the panel gets a clear "not installed" error instead of a crash.
+func CheckDeps() error {
+	if _, err := exec.LookPath("openvpn"); err != nil {
+		return errors.New("openvpn is not installed on this node")
+	}
+	return nil
+}
+
 func detectVersion() string {
 	out, err := exec.Command("openvpn", "--version").Output()
 	if err != nil && len(out) == 0 {

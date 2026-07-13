@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os"
 	"os/exec"
 	"sort"
 	"strings"
@@ -16,6 +17,20 @@ import (
 	"github.com/pasarguard/node/pkg/stats"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
+
+// CheckDeps reports whether this node has WireGuard support, so the panel gets a
+// clear "not installed" error instead of a cryptic device-creation failure. The
+// backend drives the kernel module over netlink (wgctrl), so it needs the module
+// present, not the `wg` userspace tool.
+func CheckDeps() error {
+	if _, err := os.Stat("/sys/module/wireguard"); err == nil {
+		return nil // module loaded
+	}
+	if err := exec.Command("modprobe", "-n", "wireguard").Run(); err == nil {
+		return nil // module available to load
+	}
+	return errors.New("wireguard is not installed on this node (kernel module missing)")
+}
 
 type newManagerFunc func(interfaceName string) (*Manager, error)
 

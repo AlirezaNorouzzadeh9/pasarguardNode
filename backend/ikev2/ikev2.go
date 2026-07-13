@@ -32,6 +32,17 @@ const (
 	swanctlBinary           = "/usr/sbin/swanctl"
 )
 
+// CheckDeps reports whether strongSwan (charon + swanctl) is installed, so the
+// panel gets a clear "not installed" error instead of a cryptic charon failure.
+func CheckDeps() error {
+	for _, p := range []string{charonBinary, swanctlBinary} {
+		if _, err := os.Stat(p); err != nil {
+			return fmt.Errorf("strongSwan is not installed on this node (missing %s)", p)
+		}
+	}
+	return nil
+}
+
 // IKEv2 implements backend.Backend by supervising a strongSwan charon process
 // and driving it over swanctl/VICI. Auth is EAP-MSCHAPv2 (username/password).
 type IKEv2 struct {

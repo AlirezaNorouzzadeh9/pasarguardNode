@@ -135,6 +135,9 @@ func (c *Controller) StartBackend(ctx context.Context, backendCfg *common.Backen
 		}
 
 	case common.BackendType_WIREGUARD:
+		if err := wireguard.CheckDeps(); err != nil {
+			return err
+		}
 		config, err := wireguard.NewConfig(backendCfg.GetConfig())
 		if err != nil {
 			return err
@@ -145,6 +148,9 @@ func (c *Controller) StartBackend(ctx context.Context, backendCfg *common.Backen
 		}
 
 	case common.BackendType_OPENVPN:
+		if err := openvpn.CheckDeps(); err != nil {
+			return err
+		}
 		config, err := openvpn.NewConfig(backendCfg.GetConfig())
 		if err != nil {
 			return err
@@ -155,6 +161,9 @@ func (c *Controller) StartBackend(ctx context.Context, backendCfg *common.Backen
 		}
 
 	case common.BackendType_IKEV2:
+		if err := ikev2.CheckDeps(); err != nil {
+			return err
+		}
 		config, err := ikev2.NewConfig(backendCfg.GetConfig())
 		if err != nil {
 			return err
