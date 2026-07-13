@@ -57,6 +57,38 @@ func TestUserStoreAuthorize(t *testing.T) {
 	}
 }
 
+func TestDeviceLimitDenyAndRetroactive(t *testing.T) {
+	s := newUserStore("ovpn")
+	u := openvpnUser("42", "1", "ovpn")
+	u.IpLimit = 1
+	s.replaceAll([]*common.User{u})
+
+	// First device connects; second is denied (deny-new).
+	if ok, _ := s.tryConnect("42", "1", "cidA"); !ok {
+		t.Fatal("first session should be allowed")
+	}
+	if ok, reason := s.tryConnect("42", "1", "cidB"); ok || reason != "device limit reached" {
+		t.Fatalf("second session should be denied, got ok=%v reason=%q", ok, reason)
+	}
+
+	// Raise the limit to 2; the second device can now connect.
+	u.IpLimit = 2
+	s.applyUser(u)
+	if ok, _ := s.tryConnect("42", "1", "cidB"); !ok {
+		t.Fatal("second session should be allowed at limit 2")
+	}
+
+	// Lower the limit to 1; the excess session must be reported for killing.
+	u.IpLimit = 1
+	s.applyUser(u)
+	if excess := s.excessSessions("42"); len(excess) != 1 {
+		t.Fatalf("expected 1 excess session, got %d", len(excess))
+	}
+	if excess := s.excessSessions("42"); len(excess) != 0 {
+		t.Fatalf("expected 0 excess after enforcement, got %d", len(excess))
+	}
+}
+
 func TestUserStoreEmptySerialAllowsAny(t *testing.T) {
 	s := newUserStore("ovpn")
 	s.replaceAll([]*common.User{openvpnUser("42", "", "ovpn")})

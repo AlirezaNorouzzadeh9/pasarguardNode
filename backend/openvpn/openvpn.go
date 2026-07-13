@@ -271,7 +271,20 @@ func (o *OpenVPN) SyncUsers(ctx context.Context, users []*common.User) error {
 		o.mgmt.kill(cn)
 		o.emitLogf("Info", "openvpn: removed user %s", cn)
 	}
+	for _, u := range users {
+		o.enforceDeviceLimit(u.GetEmail())
+	}
 	return nil
+}
+
+// enforceDeviceLimit drops any sessions that exceed the user's current device
+// limit, so lowering the limit disconnects the extra devices immediately (not
+// only on their next connect).
+func (o *OpenVPN) enforceDeviceLimit(cn string) {
+	for _, cid := range o.users.excessSessions(cn) {
+		o.mgmt.killClient(cid)
+		o.emitLogf("Info", "openvpn: user %s over device limit, killing session %s", cn, cid)
+	}
 }
 
 func (o *OpenVPN) UpdateUsers(ctx context.Context, users []*common.User) error {
@@ -296,6 +309,9 @@ func (o *OpenVPN) applyUsers(users []*common.User) error {
 			// New certificate serial: force reconnect so the old cert is denied.
 			o.mgmt.kill(cn)
 			o.emitLogf("Info", "openvpn: reissued user %s, killing old session", cn)
+		} else {
+			// Same user, possibly a lowered device limit: drop extra sessions.
+			o.enforceDeviceLimit(cn)
 		}
 	}
 	return nil

@@ -77,6 +77,39 @@ func (s *userStore) tryConnect(commonName, serial, clientID string) (bool, strin
 	return true, ""
 }
 
+// excessSessions returns live session client ids that exceed the user's device
+// limit, removing them from the tracked set so the caller can kill them. This
+// enforces the limit retroactively — e.g. when it is lowered while the user is
+// already connected on more devices than allowed.
+func (s *userStore) excessSessions(commonName string) []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	entry, ok := s.users[commonName]
+	if !ok || entry.ipLimit == 0 {
+		return nil
+	}
+	set := s.sessions[commonName]
+	if uint32(len(set)) <= entry.ipLimit {
+		return nil
+	}
+	var excess []string
+	var kept uint32
+	for cid := range set {
+		if kept < entry.ipLimit {
+			kept++
+			continue
+		}
+		excess = append(excess, cid)
+	}
+	for _, cid := range excess {
+		delete(set, cid)
+	}
+	if len(s.sessions[commonName]) == 0 {
+		delete(s.sessions, commonName)
+	}
+	return excess
+}
+
 // releaseSession drops a client id from the live-session set (on disconnect).
 func (s *userStore) releaseSession(commonName, clientID string) {
 	s.mu.Lock()

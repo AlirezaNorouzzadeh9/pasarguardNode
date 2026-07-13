@@ -217,6 +217,15 @@ func (m *mgmtClient) kill(commonName string) {
 	m.send("kill " + commonName)
 }
 
+// killClient terminates a single session by its management client id (CID).
+// Used to drop only the sessions that exceed a user's device limit.
+func (m *mgmtClient) killClient(cid string) {
+	if cid == "" {
+		return
+	}
+	m.send("client-kill " + cid)
+}
+
 // requestStatus issues `status 3` and waits for the parsed snapshot.
 func (m *mgmtClient) requestStatus(timeout time.Duration) []clientStatus {
 	// Drain any stale ready signal.
