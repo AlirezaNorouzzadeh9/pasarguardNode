@@ -10,6 +10,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/pasarguard/node/backend"
+	"github.com/pasarguard/node/backend/ikev2"
 	"github.com/pasarguard/node/backend/openvpn"
 	"github.com/pasarguard/node/backend/wireguard"
 	"github.com/pasarguard/node/backend/xray"
@@ -142,6 +143,17 @@ func (c *Controller) StartBackend(ctx context.Context, backend *common.Backend) 
 			return err
 		}
 		newBackend, err := openvpn.New(c.cfg, config, backend.GetUsers())
+		if err != nil {
+			return err
+		}
+		c.backend = newBackend
+
+	case common.BackendType_IKEV2:
+		config, err := ikev2.NewConfig(backend.GetConfig())
+		if err != nil {
+			return err
+		}
+		newBackend, err := ikev2.New(c.cfg, config, backend.GetUsers())
 		if err != nil {
 			return err
 		}
