@@ -166,9 +166,7 @@ func (o *IKEv2) reload() error {
 	if err := o.writeSwanctl(); err != nil {
 		return err
 	}
-	dir := filepath.Join(o.config.workDir, "swanctl")
 	cmd := exec.Command(swanctlBinary, "--load-all", "--noprompt")
-	cmd.Env = append(os.Environ(), "SWANCTL_DIR="+dir)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("swanctl --load-all: %v: %s", err, strings.TrimSpace(string(out)))

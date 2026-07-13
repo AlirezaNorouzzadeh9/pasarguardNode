@@ -7,20 +7,24 @@ import (
 	"strings"
 )
 
-func (o *IKEv2) swanctlDir() string { return filepath.Join(o.config.workDir, "swanctl") }
+// swanctlDir is the strongSwan config directory swanctl reads (compiled-in;
+// no runtime override). One charon per host means a single ikev2 backend owns it.
+const swanctlDir = "/etc/swanctl"
 
-// writeConfig lays out the swanctl directory and certificate material.
+func (o *IKEv2) certFileName() string { return "pg-" + o.config.InboundTag + ".pem" }
+func (o *IKEv2) confFileName() string { return "pg-" + o.config.InboundTag + ".conf" }
+
+// writeConfig lays out the swanctl certificate material and connection config.
 func (o *IKEv2) writeConfig() error {
-	dir := o.swanctlDir()
 	for _, sub := range []string{"conf.d", "x509", "x509ca", "private"} {
-		if err := os.MkdirAll(filepath.Join(dir, sub), 0o700); err != nil {
+		if err := os.MkdirAll(filepath.Join(swanctlDir, sub), 0o700); err != nil {
 			return err
 		}
 	}
 	files := map[string]string{
-		filepath.Join(dir, "x509", "server.pem"):   o.config.ServerCert,
-		filepath.Join(dir, "x509ca", "ca.pem"):     o.config.CACert,
-		filepath.Join(dir, "private", "server.key"): o.config.ServerKey,
+		filepath.Join(swanctlDir, "x509", o.certFileName()):   o.config.ServerCert,
+		filepath.Join(swanctlDir, "x509ca", "pg-"+o.config.InboundTag+"-ca.pem"): o.config.CACert,
+		filepath.Join(swanctlDir, "private", "pg-"+o.config.InboundTag+".key"):   o.config.ServerKey,
 	}
 	for path, content := range files {
 		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
@@ -50,7 +54,7 @@ func (o *IKEv2) writeSwanctl() error {
 	fmt.Fprintf(&b, "        send_cert = always\n")
 	fmt.Fprintf(&b, "        local {\n")
 	fmt.Fprintf(&b, "            auth = pubkey\n")
-	fmt.Fprintf(&b, "            certs = server.pem\n")
+	fmt.Fprintf(&b, "            certs = %s\n", o.certFileName())
 	fmt.Fprintf(&b, "            id = %s\n", o.config.Identity)
 	fmt.Fprintf(&b, "        }\n")
 	fmt.Fprintf(&b, "        remote {\n")
@@ -86,5 +90,5 @@ func (o *IKEv2) writeSwanctl() error {
 	}
 	fmt.Fprintf(&b, "}\n")
 
-	return os.WriteFile(filepath.Join(o.swanctlDir(), "conf.d", "ikev2.conf"), []byte(b.String()), 0o600)
+	return os.WriteFile(filepath.Join(swanctlDir, "conf.d", o.confFileName()), []byte(b.String()), 0o600)
 }
