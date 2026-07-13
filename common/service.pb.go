@@ -1512,10 +1512,13 @@ func (x *Proxy) GetIkev2() *Ikev2 {
 }
 
 type User struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Email         string                 `protobuf:"bytes,1,opt,name=email,proto3" json:"email,omitempty"`
-	Proxies       *Proxy                 `protobuf:"bytes,2,opt,name=proxies,proto3" json:"proxies,omitempty"`
-	Inbounds      []string               `protobuf:"bytes,3,rep,name=inbounds,proto3" json:"inbounds,omitempty"`
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	Email    string                 `protobuf:"bytes,1,opt,name=email,proto3" json:"email,omitempty"`
+	Proxies  *Proxy                 `protobuf:"bytes,2,opt,name=proxies,proto3" json:"proxies,omitempty"`
+	Inbounds []string               `protobuf:"bytes,3,rep,name=inbounds,proto3" json:"inbounds,omitempty"`
+	// Maximum simultaneous connections/devices (distinct source IPs) allowed
+	// for this user. 0 means unlimited. Enforced per-backend on the node.
+	IpLimit       uint32 `protobuf:"varint,4,opt,name=ip_limit,json=ipLimit,proto3" json:"ip_limit,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1569,6 +1572,13 @@ func (x *User) GetInbounds() []string {
 		return x.Inbounds
 	}
 	return nil
+}
+
+func (x *User) GetIpLimit() uint32 {
+	if x != nil {
+		return x.IpLimit
+	}
+	return 0
 }
 
 type Users struct {
@@ -1777,11 +1787,12 @@ const file_common_service_proto_rawDesc = "" +
 	"\twireguard\x18\x05 \x01(\v2\x12.service.WireguardR\twireguard\x12-\n" +
 	"\bhysteria\x18\x06 \x01(\v2\x11.service.HysteriaR\bhysteria\x12*\n" +
 	"\aopenvpn\x18\a \x01(\v2\x10.service.OpenvpnR\aopenvpn\x12$\n" +
-	"\x05ikev2\x18\b \x01(\v2\x0e.service.Ikev2R\x05ikev2\"b\n" +
+	"\x05ikev2\x18\b \x01(\v2\x0e.service.Ikev2R\x05ikev2\"}\n" +
 	"\x04User\x12\x14\n" +
 	"\x05email\x18\x01 \x01(\tR\x05email\x12(\n" +
 	"\aproxies\x18\x02 \x01(\v2\x0e.service.ProxyR\aproxies\x12\x1a\n" +
-	"\binbounds\x18\x03 \x03(\tR\binbounds\",\n" +
+	"\binbounds\x18\x03 \x03(\tR\binbounds\x12\x19\n" +
+	"\bip_limit\x18\x04 \x01(\rR\aipLimit\",\n" +
 	"\x05Users\x12#\n" +
 	"\x05users\x18\x01 \x03(\v2\r.service.UserR\x05users\"[\n" +
 	"\n" +

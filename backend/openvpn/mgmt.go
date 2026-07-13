@@ -19,9 +19,12 @@ type clientStatus struct {
 	ClientID      string
 }
 
-// authDecider decides whether a connecting common name/serial is authorized.
+// authDecider decides whether a connecting common name/serial is authorized and
+// tracks live sessions so the per-user device limit can be enforced.
 type authDecider interface {
 	authorize(commonName, serial string) bool
+	tryConnect(commonName, serial, clientID string) (bool, string)
+	releaseSession(commonName, clientID string)
 }
 
 // mgmtClient talks to the OpenVPN management interface over a unix socket.
@@ -36,10 +39,11 @@ type mgmtClient struct {
 	conn    net.Conn
 	rw      *bufio.ReadWriter
 
-	// in-flight CONNECT/REAUTH accumulation
-	pendingCID string
-	pendingKID string
-	pendingEnv map[string]string
+	// in-flight CONNECT/REAUTH/DISCONNECT accumulation
+	pendingCID        string
+	pendingKID        string
+	pendingEnv        map[string]string
+	pendingDisconnect bool
 
 	// status snapshot
 	statusMu    sync.Mutex
@@ -114,11 +118,22 @@ func (m *mgmtClient) handleLine(line string) {
 		if len(parts) > 1 {
 			m.pendingKID = parts[1]
 		}
+		m.pendingDisconnect = false
+		m.pendingEnv = make(map[string]string)
+	case strings.HasPrefix(line, ">CLIENT:DISCONNECT,"):
+		rest := line[strings.IndexByte(line, ',')+1:]
+		m.pendingCID = strings.SplitN(rest, ",", 2)[0]
+		m.pendingKID = ""
+		m.pendingDisconnect = true
 		m.pendingEnv = make(map[string]string)
 	case strings.HasPrefix(line, ">CLIENT:ENV,"):
 		env := strings.TrimPrefix(line, ">CLIENT:ENV,")
 		if env == "END" {
-			m.finishConnect()
+			if m.pendingDisconnect {
+				m.finishDisconnect()
+			} else {
+				m.finishConnect()
+			}
 			return
 		}
 		if k, v, ok := strings.Cut(env, "="); ok && m.pendingEnv != nil {
@@ -157,12 +172,30 @@ func (m *mgmtClient) finishConnect() {
 
 	cn := env["common_name"]
 	serial := env["tls_serial_0"]
-	if m.decider != nil && m.decider.authorize(cn, serial) {
+	if m.decider == nil {
+		m.send(fmt.Sprintf("client-deny %s %s \"unauthorized\"", cid, kid))
+		return
+	}
+	if allowed, reason := m.decider.tryConnect(cn, serial, cid); allowed {
 		m.send(fmt.Sprintf("client-auth-nt %s %s", cid, kid))
 		m.logf("openvpn: authorized cn=%s", cn)
 	} else {
-		m.send(fmt.Sprintf("client-deny %s %s \"unauthorized\"", cid, kid))
-		m.logf("openvpn: denied cn=%s serial=%s", cn, serial)
+		m.send(fmt.Sprintf("client-deny %s %s %q", cid, kid, reason))
+		m.logf("openvpn: denied cn=%s serial=%s reason=%s", cn, serial, reason)
+	}
+}
+
+// finishDisconnect releases the disconnecting client id from the session set so
+// the device-limit counter stays accurate.
+func (m *mgmtClient) finishDisconnect() {
+	cid := m.pendingCID
+	env := m.pendingEnv
+	m.pendingCID, m.pendingKID, m.pendingEnv, m.pendingDisconnect = "", "", nil, false
+	if cid == "" || env == nil {
+		return
+	}
+	if m.decider != nil {
+		m.decider.releaseSession(env["common_name"], cid)
 	}
 }
 

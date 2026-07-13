@@ -11,6 +11,7 @@ import (
 type userEntry struct {
 	serial      string
 	fingerprint string
+	ipLimit     uint32 // max simultaneous sessions; 0 = unlimited
 }
 
 // userStore is the authorized-user allowlist consulted by the management client.
@@ -19,10 +20,17 @@ type userStore struct {
 	inboundTag string
 	mu         sync.RWMutex
 	users      map[string]userEntry
+	// sessions tracks the live client IDs per common name so the device limit
+	// can be enforced at connect time.
+	sessions map[string]map[string]struct{}
 }
 
 func newUserStore(inboundTag string) *userStore {
-	return &userStore{inboundTag: inboundTag, users: make(map[string]userEntry)}
+	return &userStore{
+		inboundTag: inboundTag,
+		users:      make(map[string]userEntry),
+		sessions:   make(map[string]map[string]struct{}),
+	}
 }
 
 // authorize implements authDecider: the CN must be present and, when a serial
@@ -30,6 +38,10 @@ func newUserStore(inboundTag string) *userStore {
 func (s *userStore) authorize(commonName, serial string) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	return s.authorizedLocked(commonName, serial)
+}
+
+func (s *userStore) authorizedLocked(commonName, serial string) bool {
 	entry, ok := s.users[commonName]
 	if !ok {
 		return false
@@ -38,6 +50,43 @@ func (s *userStore) authorize(commonName, serial string) bool {
 		return false
 	}
 	return true
+}
+
+// tryConnect authorizes a connecting session and enforces the per-user device
+// limit. It returns allowed=false with a reason for an over-limit or unknown
+// user. A session id already counted (REAUTH of the same client) is idempotent.
+func (s *userStore) tryConnect(commonName, serial, clientID string) (bool, string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.authorizedLocked(commonName, serial) {
+		return false, "unauthorized"
+	}
+	set := s.sessions[commonName]
+	if set == nil {
+		set = make(map[string]struct{})
+		s.sessions[commonName] = set
+	}
+	if _, exists := set[clientID]; exists {
+		return true, "" // REAUTH of a session we already count
+	}
+	limit := s.users[commonName].ipLimit
+	if limit > 0 && uint32(len(set)) >= limit {
+		return false, "device limit reached"
+	}
+	set[clientID] = struct{}{}
+	return true, ""
+}
+
+// releaseSession drops a client id from the live-session set (on disconnect).
+func (s *userStore) releaseSession(commonName, clientID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if set := s.sessions[commonName]; set != nil {
+		delete(set, clientID)
+		if len(set) == 0 {
+			delete(s.sessions, commonName)
+		}
+	}
 }
 
 // wantsInterface reports whether a synced user belongs to this backend's inbound.
@@ -60,12 +109,13 @@ func (s *userStore) applyUser(u *common.User) (cn string, changedSerial bool, re
 		s.mu.Lock()
 		_, existed := s.users[cn]
 		delete(s.users, cn)
+		delete(s.sessions, cn)
 		s.mu.Unlock()
 		return cn, false, existed
 	}
 
 	ov := u.GetProxies().GetOpenvpn()
-	entry := userEntry{serial: ov.GetSerial(), fingerprint: ov.GetFingerprint()}
+	entry := userEntry{serial: ov.GetSerial(), fingerprint: ov.GetFingerprint(), ipLimit: u.GetIpLimit()}
 
 	s.mu.Lock()
 	prev, existed := s.users[cn]
@@ -88,13 +138,14 @@ func (s *userStore) replaceAll(users []*common.User) (removed []string) {
 			continue
 		}
 		ov := u.GetProxies().GetOpenvpn()
-		next[cn] = userEntry{serial: ov.GetSerial(), fingerprint: ov.GetFingerprint()}
+		next[cn] = userEntry{serial: ov.GetSerial(), fingerprint: ov.GetFingerprint(), ipLimit: u.GetIpLimit()}
 	}
 
 	s.mu.Lock()
 	for cn := range s.users {
 		if _, ok := next[cn]; !ok {
 			removed = append(removed, cn)
+			delete(s.sessions, cn)
 		}
 	}
 	s.users = next
