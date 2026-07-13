@@ -26,7 +26,11 @@ func (s *Service) Start(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if s.Backend() != nil {
+	// Same client -> add another core to the node; different client -> take over.
+	existing := s.Backend() != nil
+	sameClient := existing && s.Ip() == ip
+
+	if existing && !sameClient {
 		log.Println("New connection from ", ip, " core control access was taken away from previous client.")
 		s.Disconnect()
 	}
@@ -36,7 +40,11 @@ func (s *Service) Start(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.Connect(ip, data.GetKeepAlive())
+	if sameClient {
+		s.NewRequest()
+	} else {
+		s.Connect(ip, data.GetKeepAlive())
+	}
 
 	common.SendProtoResponse(w, s.BaseInfoResponse())
 }

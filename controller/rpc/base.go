@@ -27,7 +27,13 @@ func (s *Service) Start(ctx context.Context, data *common.Backend) (*common.Base
 		}
 	}
 
-	if s.Backend() != nil {
+	// A node can run several cores at once (e.g. openvpn + ikev2). The panel is a
+	// single client that calls Start once per core, so a Start from the SAME
+	// client adds another backend; a Start from a DIFFERENT client takes over.
+	existing := s.Backend() != nil
+	sameClient := existing && s.Ip() == clientIP
+
+	if existing && !sameClient {
 		log.Println("New connection from ", clientIP, " core control access was taken away from previous client.")
 		s.Disconnect()
 	}
@@ -36,7 +42,11 @@ func (s *Service) Start(ctx context.Context, data *common.Backend) (*common.Base
 		return nil, err
 	}
 
-	s.Connect(clientIP, data.GetKeepAlive())
+	if sameClient {
+		s.NewRequest()
+	} else {
+		s.Connect(clientIP, data.GetKeepAlive())
+	}
 
 	return s.BaseInfoResponse(), nil
 }

@@ -27,7 +27,9 @@ type Service interface {
 }
 
 type Controller struct {
-	backend     backend.Backend
+	// backends holds every core running on this node, keyed by backend type,
+	// so one node can serve e.g. openvpn + ikev2 at the same time.
+	backends    map[common.BackendType]backend.Backend
 	cfg         *config.Config
 	apiPort     int
 	metricPort  int
@@ -42,6 +44,7 @@ func New(cfg *config.Config) *Controller {
 	_, cancel := context.WithCancel(context.Background())
 	return &Controller{
 		cfg:        cfg,
+		backends:   make(map[common.BackendType]backend.Backend),
 		apiPort:    netutil.FindFreePort(),
 		metricPort: netutil.FindFreePort(),
 		cancelFunc: cancel,
@@ -72,19 +75,22 @@ func (c *Controller) Disconnect() {
 	c.cancelFunc()
 
 	c.mu.Lock()
-	backend := c.backend
+	backends := make([]backend.Backend, 0, len(c.backends))
+	for _, b := range c.backends {
+		backends = append(backends, b)
+	}
 	c.mu.Unlock()
 
-	// Shutdown backend outside of lock to avoid deadlock
-	// Shutdown() will wait for process termination to complete
-	if backend != nil {
-		backend.Shutdown()
+	// Shutdown backends outside of lock to avoid deadlock.
+	// Shutdown() will wait for process termination to complete.
+	for _, b := range backends {
+		b.Shutdown()
 	}
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	c.backend = nil
+	c.backends = make(map[common.BackendType]backend.Backend)
 	c.apiPort = netutil.FindFreePort()
 	c.metricPort = netutil.FindFreePort()
 	c.clientIP = ""
@@ -102,21 +108,24 @@ func (c *Controller) NewRequest() {
 	c.lastRequest = time.Now()
 }
 
-func (c *Controller) StartBackend(ctx context.Context, backend *common.Backend) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+// StartBackend brings up (or replaces) the backend for a given type and adds it
+// to the node's backend set. Calling it repeatedly with different types lets one
+// node run several cores side by side; calling it again for the same type shuts
+// the old instance down and swaps in the new one.
+func (c *Controller) StartBackend(ctx context.Context, backendCfg *common.Backend) error {
+	var newBackend backend.Backend
 
-	switch backend.GetType() {
+	switch backendCfg.GetType() {
 	case common.BackendType_XRAY:
-		config, err := xray.NewConfig(backend.GetConfig(), backend.GetExcludeInbounds())
+		config, err := xray.NewConfig(backendCfg.GetConfig(), backendCfg.GetExcludeInbounds())
 		if err != nil {
 			return err
 		}
 
-		newBackend, err := xray.New(
+		newBackend, err = xray.New(
 			ctx,
 			config,
-			backend.GetUsers(),
+			backendCfg.GetUsers(),
 			c.apiPort,
 			c.metricPort,
 			c.cfg,
@@ -124,51 +133,70 @@ func (c *Controller) StartBackend(ctx context.Context, backend *common.Backend) 
 		if err != nil {
 			return err
 		}
-		c.backend = newBackend
 
 	case common.BackendType_WIREGUARD:
-		config, err := wireguard.NewConfig(backend.GetConfig())
+		config, err := wireguard.NewConfig(backendCfg.GetConfig())
 		if err != nil {
 			return err
 		}
-		newBackend, err := wireguard.New(c.cfg, config, backend.GetUsers())
+		newBackend, err = wireguard.New(c.cfg, config, backendCfg.GetUsers())
 		if err != nil {
 			return err
 		}
-		c.backend = newBackend
 
 	case common.BackendType_OPENVPN:
-		config, err := openvpn.NewConfig(backend.GetConfig())
+		config, err := openvpn.NewConfig(backendCfg.GetConfig())
 		if err != nil {
 			return err
 		}
-		newBackend, err := openvpn.New(c.cfg, config, backend.GetUsers())
+		newBackend, err = openvpn.New(c.cfg, config, backendCfg.GetUsers())
 		if err != nil {
 			return err
 		}
-		c.backend = newBackend
 
 	case common.BackendType_IKEV2:
-		config, err := ikev2.NewConfig(backend.GetConfig())
+		config, err := ikev2.NewConfig(backendCfg.GetConfig())
 		if err != nil {
 			return err
 		}
-		newBackend, err := ikev2.New(c.cfg, config, backend.GetUsers())
+		newBackend, err = ikev2.New(c.cfg, config, backendCfg.GetUsers())
 		if err != nil {
 			return err
 		}
-		c.backend = newBackend
 	default:
 		return errors.New("invalid backend type")
+	}
+
+	c.mu.Lock()
+	old := c.backends[backendCfg.GetType()]
+	c.backends[backendCfg.GetType()] = newBackend
+	c.mu.Unlock()
+
+	// Replace-by-type: tear down a previous instance of the same core.
+	if old != nil {
+		old.Shutdown()
 	}
 
 	return nil
 }
 
+// Backend returns a composite view over every core running on this node, so the
+// rpc/rest handlers can keep operating on a single backend.Backend.
 func (c *Controller) Backend() backend.Backend {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	return c.backend
+	if len(c.backends) == 0 {
+		return nil
+	}
+	list := make([]backend.Backend, 0, len(c.backends))
+	for _, b := range c.backends {
+		list = append(list, b)
+	}
+	composite := backend.NewComposite(list)
+	if composite == nil {
+		return nil
+	}
+	return composite
 }
 
 func (c *Controller) keepAliveTracker(ctx context.Context, keepAlive time.Duration) {
@@ -224,8 +252,9 @@ func (c *Controller) recordSystemStats(ctx context.Context) {
 func (c *Controller) SystemStats(ctx context.Context) *common.SystemStatsResponse {
 	c.mu.RLock()
 	statsSnapshot := c.stats
-	backendSnapshot := c.backend
 	c.mu.RUnlock()
+
+	backendSnapshot := c.Backend()
 
 	response := &common.SystemStatsResponse{}
 	if statsSnapshot != nil {
@@ -256,8 +285,7 @@ func (c *Controller) SystemStats(ctx context.Context) *common.SystemStatsRespons
 }
 
 func (c *Controller) BaseInfoResponse() *common.BaseInfoResponse {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	back := c.Backend()
 
 	response := &common.BaseInfoResponse{
 		Started:     false,
@@ -265,18 +293,16 @@ func (c *Controller) BaseInfoResponse() *common.BaseInfoResponse {
 		NodeVersion: NodeVersion,
 	}
 
-	if c.backend != nil {
-		response.Started = c.backend.Started()
-		response.CoreVersion = c.backend.Version()
+	if back != nil {
+		response.Started = back.Started()
+		response.CoreVersion = back.Version()
 	}
 
 	return response
 }
 
 func (c *Controller) OutboundsLatency(ctx context.Context, request *common.LatencyRequest) (*common.LatencyResponse, error) {
-	c.mu.RLock()
-	backendSnapshot := c.backend
-	c.mu.RUnlock()
+	backendSnapshot := c.Backend()
 
 	if backendSnapshot == nil {
 		return &common.LatencyResponse{Latencies: []*common.Latency{}}, nil
