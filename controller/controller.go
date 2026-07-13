@@ -297,9 +297,10 @@ func (c *Controller) BaseInfoResponse() *common.BaseInfoResponse {
 	back := c.Backend()
 
 	response := &common.BaseInfoResponse{
-		Started:     false,
-		CoreVersion: "",
-		NodeVersion: NodeVersion,
+		Started:           false,
+		CoreVersion:       "",
+		NodeVersion:       NodeVersion,
+		AvailableBackends: availableBackends(),
 	}
 
 	if back != nil {
@@ -308,6 +309,24 @@ func (c *Controller) BaseInfoResponse() *common.BaseInfoResponse {
 	}
 
 	return response
+}
+
+// availableBackends reports which backend types this node can actually run,
+// based on whether their OS-level dependencies are installed. xray needs none;
+// the others are probed via each backend's CheckDeps. The panel uses this to
+// grey out cores a node cannot serve.
+func availableBackends() []common.BackendType {
+	out := []common.BackendType{common.BackendType_XRAY}
+	if openvpn.CheckDeps() == nil {
+		out = append(out, common.BackendType_OPENVPN)
+	}
+	if wireguard.CheckDeps() == nil {
+		out = append(out, common.BackendType_WIREGUARD)
+	}
+	if ikev2.CheckDeps() == nil {
+		out = append(out, common.BackendType_IKEV2)
+	}
+	return out
 }
 
 func (c *Controller) OutboundsLatency(ctx context.Context, request *common.LatencyRequest) (*common.LatencyResponse, error) {

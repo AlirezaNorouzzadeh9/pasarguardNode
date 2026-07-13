@@ -11,6 +11,8 @@ message BaseInfoResponse {
   bool started = 1;
   string core_version = 2;
   string node_version = 3;
+  // Backend types whose OS-level dependencies are installed on this node.
+  repeated BackendType available_backends = 4;
 }
 
 enum BackendType {
