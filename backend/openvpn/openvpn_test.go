@@ -126,20 +126,21 @@ func TestConfigDefaultsAndValidation(t *testing.T) {
 
 func TestRenderServerConf(t *testing.T) {
 	cfg := &Config{
-		InboundTag:   "ovpn",
-		Port:         1194,
-		Proto:        "udp",
-		Device:       "tun",
-		ServerSubnet: "10.29.0.0/16",
-		Cipher:       "AES-256-GCM",
-		DataCiphers:  []string{"AES-256-GCM", "CHACHA20-POLY1305"},
-		Auth:         "SHA256",
-		Keepalive:    "10 60",
-		MaxClients:   1024,
-		DuplicateCN:  true,
-		DNS:          []string{"1.1.1.1"},
-		TLSCryptKey:  "-----BEGIN OpenVPN Static key V1-----\nx\n-----END OpenVPN Static key V1-----\n",
-		workDir:      "/tmp/ovpn",
+		InboundTag:            "ovpn",
+		Port:                  1194,
+		Proto:                 "udp",
+		Device:                "tun",
+		ServerSubnet:          "10.29.0.0/16",
+		Cipher:                "AES-256-GCM",
+		DataCiphers:           []string{"AES-256-GCM", "CHACHA20-POLY1305"},
+		Auth:                  "SHA256",
+		Keepalive:             "10 60",
+		MaxClients:            1024,
+		DuplicateCN:           true,
+		DNS:                   []string{"1.1.1.1"},
+		ExtraServerDirectives: []string{"mssfix 1360", "compress lz4-v2", "  ", "sndbuf 393216"},
+		TLSCryptKey:           "-----BEGIN OpenVPN Static key V1-----\nx\n-----END OpenVPN Static key V1-----\n",
+		workDir:               "/tmp/ovpn",
 	}
 	conf, err := cfg.renderServerConf()
 	if err != nil {
@@ -157,6 +158,9 @@ func TestRenderServerConf(t *testing.T) {
 		"tls-crypt tc.key",
 		"data-ciphers AES-256-GCM:CHACHA20-POLY1305",
 		"push \"dhcp-option DNS 1.1.1.1\"",
+		"mssfix 1360",
+		"compress lz4-v2",
+		"sndbuf 393216",
 	} {
 		if !contains(conf, want) {
 			t.Errorf("server.conf missing %q\n---\n%s", want, conf)

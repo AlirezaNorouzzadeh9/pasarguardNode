@@ -23,10 +23,15 @@ type Config struct {
 	MaxClients   int      `json:"max_clients"`
 	DuplicateCN  bool     `json:"duplicate_cn"`
 	Push         []string `json:"push"`
-	CACert       string   `json:"ca_cert"`
-	ServerCert   string   `json:"server_cert"`
-	ServerKey    string   `json:"server_key"`
-	TLSCryptKey  string   `json:"tls_crypt_key"`
+	// ExtraServerDirectives are raw server.conf lines appended verbatim. They
+	// let operators tune the server (mssfix, sndbuf, compress, …) without the
+	// panel modelling every option. Critical lines (management, status, certs)
+	// are always emitted by the node and cannot be overridden from here.
+	ExtraServerDirectives []string `json:"extra_server_directives"`
+	CACert                string   `json:"ca_cert"`
+	ServerCert            string   `json:"server_cert"`
+	ServerKey             string   `json:"server_key"`
+	TLSCryptKey           string   `json:"tls_crypt_key"`
 
 	workDir string
 }

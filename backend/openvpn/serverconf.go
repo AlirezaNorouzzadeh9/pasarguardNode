@@ -90,6 +90,13 @@ func (c *Config) renderServerConf() (string, error) {
 	for _, line := range c.Push {
 		fmt.Fprintf(&b, "push %q\n", line)
 	}
+	// Operator-supplied raw directives (mssfix, sndbuf, compress, …). Appended
+	// before the management/status block so those critical lines always win.
+	for _, line := range c.ExtraServerDirectives {
+		if line = strings.TrimSpace(line); line != "" {
+			b.WriteString(line + "\n")
+		}
+	}
 	// Authorize connecting clients over the management interface (no external scripts).
 	// auth-user-pass-optional lets cert-only clients through: management-client-auth
 	// otherwise demands a username/password, which our certificate-based clients
