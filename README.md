@@ -26,13 +26,13 @@ systemd service, and prints the details to register the node in the panel.
 
 ```bash
 # interactive (asks which backends)
-sudo bash -c "$(curl -sL https://github.com/AlirezaNorouzzadeh9/pasarguardNode/raw/feat/openvpn-ikev2/scripts/install.sh)"
+sudo bash -c "$(curl -sL https://github.com/AlirezaNorouzzadeh9/pasarguardNode/raw/main/scripts/install.sh)"
 ```
 
 Non-interactive, e.g. an OpenVPN + IKEv2 node on port 62050:
 
 ```bash
-sudo bash -c "$(curl -sL https://github.com/AlirezaNorouzzadeh9/pasarguardNode/raw/feat/openvpn-ikev2/scripts/install.sh)" @ --backends openvpn,ikev2 --port 62050 --yes
+sudo bash -c "$(curl -sL https://github.com/AlirezaNorouzzadeh9/pasarguardNode/raw/main/scripts/install.sh)" @ --backends openvpn,ikev2 --port 62050 --yes
 ```
 
 Flags: `--backends <list>`, `--port <n>`, `--host <addr>`, `--branch <name>`,

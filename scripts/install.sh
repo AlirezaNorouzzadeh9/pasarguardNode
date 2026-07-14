@@ -15,7 +15,7 @@ set -euo pipefail
 
 # ---- defaults (override via flags / env) -----------------------------------
 REPO="${REPO:-https://github.com/AlirezaNorouzzadeh9/pasarguardNode.git}"
-BRANCH="${BRANCH:-feat/openvpn-ikev2}"
+BRANCH="${BRANCH:-main}"
 GO_VERSION="${GO_VERSION:-1.26.2}"
 
 INSTALL_DIR="${INSTALL_DIR:-/opt/pg-node}"
