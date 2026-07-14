@@ -771,10 +771,11 @@ func (c *Config) ApplyAPI(apiPort, metricPort int) (err error) {
 }
 
 func (c *Config) checkPolicy() {
+	// StatsUserOnline is forced on so xray-core tracks each user's distinct online
+	// source IPs; the per-user device/IP limit enforcement reads that list.
 	if c.Policy == nil {
 		c.Policy = &conf.PolicyConfig{Levels: make(map[uint32]*conf.Policy)}
-		c.Policy.Levels[0] = &conf.Policy{StatsUserUplink: true, StatsUserDownlink: true}
-		// StatsUserOnline is not set, which will default to false
+		c.Policy.Levels[0] = &conf.Policy{StatsUserUplink: true, StatsUserDownlink: true, StatsUserOnline: true}
 	} else {
 		if c.Policy.Levels == nil {
 			c.Policy.Levels = make(map[uint32]*conf.Policy)
@@ -782,11 +783,11 @@ func (c *Config) checkPolicy() {
 
 		zero, ok := c.Policy.Levels[0]
 		if !ok {
-			c.Policy.Levels[0] = &conf.Policy{StatsUserUplink: true, StatsUserDownlink: true}
+			c.Policy.Levels[0] = &conf.Policy{StatsUserUplink: true, StatsUserDownlink: true, StatsUserOnline: true}
 		} else {
 			zero.StatsUserDownlink = true
 			zero.StatsUserUplink = true
-			// Don't modify StatsUserOnline, respect the value that's already there
+			zero.StatsUserOnline = true
 		}
 	}
 

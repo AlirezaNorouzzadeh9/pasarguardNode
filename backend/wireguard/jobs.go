@@ -98,6 +98,21 @@ func (wg *WireGuard) updateConnectedPeers(ctx context.Context) {
 	}
 
 	wg.statsTracker.UpdateStatsBatch(samples)
+
+	// Feed this poll's endpoints into the device-limit enforcer.
+	activeIPs := make(map[string]map[string]struct{}, len(samples))
+	for _, s := range samples {
+		if s.EndpointIP == "" {
+			continue
+		}
+		set := activeIPs[s.Email]
+		if set == nil {
+			set = make(map[string]struct{})
+			activeIPs[s.Email] = set
+		}
+		set[s.EndpointIP] = struct{}{}
+	}
+	wg.enforceIpLimits(mgr, activeIPs)
 }
 
 func (wg *WireGuard) logStatsDeviceReadError(err error) {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"runtime"
+	"sort"
 	"time"
 
 	"github.com/pasarguard/node/common"
@@ -66,6 +67,7 @@ func (o *IKEv2) poll() {
 		}
 	}
 	now := time.Now().Unix()
+	onlineIPs := make(map[string]map[string]int64, len(perIdentitySAs))
 	for identity, saList := range perIdentitySAs {
 		o.cumRx[identity] += growthRx[identity]
 		o.cumTx[identity] += growthTx[identity]
@@ -75,6 +77,15 @@ func (o *IKEv2) poll() {
 		if len(saList) > 0 {
 			endpoint = saList[0].Remote
 		}
+		// Snapshot every distinct client IP this identity currently holds an SA
+		// from (a user can be online from several devices/IPs at once).
+		ips := make(map[string]int64, len(saList))
+		for _, sa := range saList {
+			if sa.Remote != "" {
+				ips[sa.Remote] = now
+			}
+		}
+		onlineIPs[identity] = ips
 		samples = append(samples, stats.Sample{
 			PublicKey:  identity,
 			Email:      identity,
@@ -82,8 +93,8 @@ func (o *IKEv2) poll() {
 			Tx:         o.cumTx[identity],
 			EndpointIP: endpoint,
 		})
-		_ = now
 	}
+	o.onlineIPs = onlineIPs
 	o.mu.Unlock()
 
 	if len(samples) > 0 {
@@ -93,16 +104,34 @@ func (o *IKEv2) poll() {
 	o.enforceDeviceLimits(perIdentitySAs)
 }
 
-// enforceDeviceLimits terminates the SAs that exceed a user's device limit.
+// enforceDeviceLimits terminates the SAs of the client IPs that exceed a user's
+// device limit. The limit counts distinct simultaneous client IPs (not raw SA
+// count), so rekeys/duplicate SAs from one device never trip it. Eviction is
+// stable (lowest IPs kept) so the same devices stay connected across polls.
 func (o *IKEv2) enforceDeviceLimits(perIdentity map[string][]saInfo) {
 	for identity, saList := range perIdentity {
 		limit := o.users.limitFor(identity)
-		if limit == 0 || uint32(len(saList)) <= limit {
+		if limit == 0 {
 			continue
 		}
-		for _, sa := range saList[limit:] {
-			if err := o.vici.terminateIKE(sa.IKEID); err == nil {
-				o.emitLogf("Info", "ikev2: user %s over device limit, terminating SA %d", identity, sa.IKEID)
+		byIP := make(map[string][]saInfo)
+		for _, sa := range saList {
+			byIP[sa.Remote] = append(byIP[sa.Remote], sa)
+		}
+		if uint32(len(byIP)) <= limit {
+			continue
+		}
+		ips := make([]string, 0, len(byIP))
+		for ip := range byIP {
+			ips = append(ips, ip)
+		}
+		sort.Strings(ips)
+		for _, ip := range ips[limit:] {
+			for _, sa := range byIP[ip] {
+				if err := o.vici.terminateIKE(sa.IKEID); err == nil {
+					o.emitLogf("Info", "ikev2: user %s over device limit (%d IPs > %d), terminating SA %d from %s",
+						identity, len(byIP), limit, sa.IKEID, ip)
+				}
 			}
 		}
 	}
@@ -155,9 +184,11 @@ func (o *IKEv2) GetUserOnlineIpListStats(ctx context.Context, email string) (*co
 		return nil, errNotStarted
 	}
 	response := &common.StatsOnlineIpListResponse{Name: email, Ips: make(map[string]int64)}
-	for ip, ts := range o.statsTracker.EndpointActivity([]string{email}) {
+	o.mu.RLock()
+	for ip, ts := range o.onlineIPs[email] {
 		response.Ips[ip] = ts
 	}
+	o.mu.RUnlock()
 	return response, nil
 }
 

@@ -79,6 +79,10 @@ type IKEv2 struct {
 	// per-identity cumulative byte counters fed to the stats tracker.
 	cumRx map[string]int64
 	cumTx map[string]int64
+	// onlineIPs is the last poll's snapshot of distinct client IPs per identity
+	// (identity -> ip -> last-seen unix ts), used for online reporting and the
+	// distinct-IP device limit.
+	onlineIPs map[string]map[string]int64
 
 	process   *exec.Cmd
 	waitDone  chan struct{}
@@ -116,6 +120,7 @@ func New(cfg *config.Config, ikConfig *Config, users []*common.User) (*IKEv2, er
 		saSeen:         make(map[uint32][2]int64),
 		cumRx:          make(map[string]int64),
 		cumTx:          make(map[string]int64),
+		onlineIPs:      make(map[string]map[string]int64),
 		waitDone:       make(chan struct{}),
 		logChan:        make(chan string, cfg.LogBufferSize),
 		cancel:         cancel,

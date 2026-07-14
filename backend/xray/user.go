@@ -152,6 +152,7 @@ func (x *Xray) SyncUser(ctx context.Context, user *common.User) error {
 	if errMessage != "" {
 		return errors.New("failed to add user:" + errMessage)
 	}
+	x.rememberUsers([]*common.User{user}, false)
 	return nil
 }
 
@@ -163,6 +164,7 @@ func (x *Xray) SyncUsers(ctx context.Context, users []*common.User) error {
 	if err := x.checkXrayStatus(ctx); err != nil {
 		return err
 	}
+	x.rememberUsers(users, true)
 	return nil
 }
 
@@ -197,6 +199,7 @@ func (x *Xray) UpdateUsers(ctx context.Context, users []*common.User) error {
 		return errors.New("failed to update users:" + errMessage)
 	}
 
+	x.rememberUsers(users, false)
 	return nil
 }
 
@@ -208,5 +211,6 @@ func (x *Xray) UpdateUsersAndRestart(ctx context.Context, users []*common.User) 
 	if err := x.checkXrayStatus(ctx); err != nil {
 		return err
 	}
+	x.rememberUsers(users, true)
 	return nil
 }

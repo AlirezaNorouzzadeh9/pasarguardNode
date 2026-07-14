@@ -17,6 +17,7 @@ func (wg *WireGuard) SyncUser(_ context.Context, user *common.User) error {
 	wg.syncMu.Lock()
 	defer wg.syncMu.Unlock()
 
+	wg.rememberLimits([]*common.User{user}, false)
 	return wg.syncUsersPartialReconcile([]*common.User{user})
 }
 
@@ -25,6 +26,7 @@ func (wg *WireGuard) SyncUsers(_ context.Context, users []*common.User) error {
 	wg.syncMu.Lock()
 	defer wg.syncMu.Unlock()
 
+	wg.rememberLimits(users, true)
 	return wg.syncUsersFull(users)
 }
 
@@ -33,6 +35,7 @@ func (wg *WireGuard) UpdateUsers(_ context.Context, users []*common.User) error 
 	wg.syncMu.Lock()
 	defer wg.syncMu.Unlock()
 
+	wg.rememberLimits(users, false)
 	return wg.syncUsersPartialReconcile(users)
 }
 
@@ -42,6 +45,7 @@ func (wg *WireGuard) UpdateUsersAndRestart(_ context.Context, users []*common.Us
 	wg.syncMu.Lock()
 	defer wg.syncMu.Unlock()
 
+	wg.rememberLimits(users, true)
 	if err := wg.syncUsersPartialReconcile(users); err != nil {
 		return err
 	}

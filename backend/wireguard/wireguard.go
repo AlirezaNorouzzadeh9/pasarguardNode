@@ -97,6 +97,15 @@ type WireGuard struct {
 	lastStatsErrAt time.Time
 	newManager     newManagerFunc
 	hostRouting    func()
+
+	// Per-user device/IP-limit state (email-keyed). WireGuard is UDP/stateless
+	// (a peer roams to one endpoint at a time), so the limit is approximated
+	// against distinct endpoint IPs seen within a sliding window.
+	limitMu     sync.Mutex
+	userLimits  map[string]uint32               // email -> ip_limit (0 = unlimited)
+	ipWindow    map[string]map[string]time.Time // email -> endpoint ip -> last seen
+	overStrikes map[string]int                  // email -> consecutive over-limit polls
+	kicked      map[string]time.Time            // email -> time disconnected for exceeding the limit
 }
 
 // getWireGuardVersion fetches the wireguard-tools version
@@ -170,6 +179,10 @@ func newWithManagerFactory(cfg *config.Config, wgConfig *Config, users []*common
 		version:        version,
 		newManager:     managerFactory,
 		state:          lifecycleStarting,
+		userLimits:     make(map[string]uint32),
+		ipWindow:       make(map[string]map[string]time.Time),
+		overStrikes:    make(map[string]int),
+		kicked:         make(map[string]time.Time),
 	}
 
 	start := time.Now()
