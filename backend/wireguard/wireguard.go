@@ -23,13 +23,18 @@ import (
 // backend drives the kernel module over netlink (wgctrl), so it needs the module
 // present, not the `wg` userspace tool.
 func CheckDeps() error {
+	// Report WireGuard as available only when it was actually set up on this node:
+	// the kernel module is loaded (the node is running / has run wireguard) or the
+	// wireguard-tools (`wg`) package is installed. A merely *loadable* module
+	// (`modprobe -n`) is NOT enough — most kernels ship it, which would make every
+	// node claim wireguard even when the operator never installed it.
 	if _, err := os.Stat("/sys/module/wireguard"); err == nil {
-		return nil // module loaded
+		return nil
 	}
-	if err := exec.Command("modprobe", "-n", "wireguard").Run(); err == nil {
-		return nil // module available to load
+	if _, err := exec.LookPath("wg"); err == nil {
+		return nil
 	}
-	return errors.New("wireguard is not installed on this node (kernel module missing)")
+	return errors.New("wireguard is not installed on this node")
 }
 
 // DetectVersion returns the installed WireGuard version. It prefers the kernel
