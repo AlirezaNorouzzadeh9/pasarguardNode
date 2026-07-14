@@ -256,6 +256,18 @@ EOF
   systemctl enable --now "$SERVICE"
 }
 
+open_firewall() {
+  local port="$SERVICE_PORT"
+  if has ufw && ufw status 2>/dev/null | grep -qi "Status: active"; then
+    ufw allow "${port}/tcp" >/dev/null 2>&1 && log "Opened ${port}/tcp in ufw"
+  fi
+  if has firewall-cmd && firewall-cmd --state >/dev/null 2>&1; then
+    firewall-cmd --permanent --add-port="${port}/tcp" >/dev/null 2>&1 && firewall-cmd --reload >/dev/null 2>&1 && log "Opened ${port}/tcp in firewalld"
+  fi
+  warn "If this server has a CLOUD firewall (DigitalOcean/AWS/Hetzner/etc.),"
+  warn "you must also allow inbound TCP ${port} in the provider's dashboard."
+}
+
 print_summary() {
   sleep 2
   echo
@@ -268,9 +280,10 @@ print_summary() {
   echo -e "  ${c_yel}API key${c_off}     : ${API_KEY}"
   echo
   echo -e "  Register this node in the panel with the above, and paste the"
-  echo -e "  ${c_yel}Server CA${c_off} below into the node's \"Server CA\" field:"
+  echo -e "  ${c_yel}Server CA${c_off} below into the node's \"Server CA\" field"
+  echo -e "  (copy exactly, including the BEGIN/END lines, no extra spaces):"
   echo
-  sed 's/^/    /' "$CERT_DIR/ssl_cert.pem"
+  cat "$CERT_DIR/ssl_cert.pem"
   echo
   echo -e "  Logs: ${c_cyn}journalctl -u ${SERVICE} -f${c_off}"
   echo -e "${c_cyn}==================================================================${c_off}"
@@ -300,6 +313,7 @@ main() {
   gen_cert
   gen_apikey
   write_service
+  open_firewall
   print_summary
 }
 
