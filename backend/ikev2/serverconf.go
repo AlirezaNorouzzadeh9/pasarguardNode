@@ -21,10 +21,22 @@ func (o *IKEv2) writeConfig() error {
 			return err
 		}
 	}
+	// Clear previous CA files for this tag so a shorter chain never leaves stale
+	// certs behind.
+	oldCAs, _ := filepath.Glob(filepath.Join(swanctlDir, "x509ca", "pg-"+o.config.InboundTag+"-ca*.pem"))
+	for _, f := range oldCAs {
+		_ = os.Remove(f)
+	}
+
 	files := map[string]string{
-		filepath.Join(swanctlDir, "x509", o.certFileName()):   o.config.ServerCert,
-		filepath.Join(swanctlDir, "x509ca", "pg-"+o.config.InboundTag+"-ca.pem"): o.config.CACert,
-		filepath.Join(swanctlDir, "private", "pg-"+o.config.InboundTag+".key"):   o.config.ServerKey,
+		filepath.Join(swanctlDir, "x509", o.certFileName()):                    o.config.ServerCert,
+		filepath.Join(swanctlDir, "private", "pg-"+o.config.InboundTag+".key"): o.config.ServerKey,
+	}
+	// swanctl loads only the FIRST certificate per file, so write each CA/chain
+	// certificate to its own file — a public CA chain (e.g. Let's Encrypt) can
+	// have several intermediates that must all be sent to the client.
+	for i, cert := range splitPEMCerts(o.config.CACert) {
+		files[filepath.Join(swanctlDir, "x509ca", fmt.Sprintf("pg-%s-ca-%d.pem", o.config.InboundTag, i))] = cert
 	}
 	for path, content := range files {
 		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
@@ -32,6 +44,24 @@ func (o *IKEv2) writeConfig() error {
 		}
 	}
 	return o.writeSwanctl()
+}
+
+// splitPEMCerts splits a PEM bundle into individual certificate blocks.
+func splitPEMCerts(pemData string) []string {
+	var out []string
+	var cur strings.Builder
+	for _, line := range strings.Split(pemData, "\n") {
+		if strings.TrimSpace(line) == "" && cur.Len() == 0 {
+			continue
+		}
+		cur.WriteString(line)
+		cur.WriteString("\n")
+		if strings.Contains(line, "END CERTIFICATE") {
+			out = append(out, strings.TrimSpace(cur.String()))
+			cur.Reset()
+		}
+	}
+	return out
 }
 
 // writeSwanctl (re)writes the connection/pool/secrets config from current users.
