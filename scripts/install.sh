@@ -324,13 +324,13 @@ install_command() {
   require_root; detect_pm
   choose_backends
   choose_ports
+  choose_apikey
   detect_public_ip
   install_base_deps
   install_backend_deps
   install_go
   build_node
   gen_cert
-  choose_apikey
   save_apikey
   write_service
   open_firewall
