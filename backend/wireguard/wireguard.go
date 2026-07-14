@@ -32,6 +32,18 @@ func CheckDeps() error {
 	return errors.New("wireguard is not installed on this node (kernel module missing)")
 }
 
+// DetectVersion returns the installed WireGuard version. It prefers the kernel
+// module version (the node drives the module over netlink, so wireguard-tools
+// may be absent) and falls back to `wg --version`.
+func DetectVersion() string {
+	if data, err := os.ReadFile("/sys/module/wireguard/version"); err == nil {
+		if v := strings.TrimSpace(string(data)); v != "" {
+			return v
+		}
+	}
+	return getWireGuardVersion()
+}
+
 type newManagerFunc func(interfaceName string) (*Manager, error)
 
 type lifecycleState uint8

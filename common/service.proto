@@ -13,6 +13,9 @@ message BaseInfoResponse {
   string node_version = 3;
   // Backend types whose OS-level dependencies are installed on this node.
   repeated BackendType available_backends = 4;
+  // Installed version per backend (core type string -> version), e.g.
+  // {"xray":"26.3.27","openvpn":"2.6.3","ikev2":"5.9.5"}.
+  map<string, string> backend_versions = 5;
 }
 
 enum BackendType {

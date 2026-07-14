@@ -89,6 +89,21 @@ func (c *Core) GenerateConfigFile(config []byte) error {
 	return err
 }
 
+// DetectVersion returns the installed Xray-core version at the given path,
+// without needing a running Core. Returns "unknown" if it can't be determined.
+func DetectVersion(executablePath string) string {
+	cmd := exec.Command(executablePath, "version")
+	var out bytes.Buffer
+	cmd.Stdout = &out
+	if err := cmd.Run(); err != nil {
+		return "unknown"
+	}
+	if m := regexp.MustCompile(`^Xray (\d+\.\d+\.\d+)`).FindStringSubmatch(out.String()); len(m) > 1 {
+		return m[1]
+	}
+	return "unknown"
+}
+
 func (c *Core) refreshVersion() (string, error) {
 	cmd := exec.Command(c.executablePath, "version")
 	var out bytes.Buffer

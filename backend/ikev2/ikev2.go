@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -17,6 +18,20 @@ import (
 )
 
 var errNotStarted = errors.New("ikev2 not started")
+
+var strongswanVersionRe = regexp.MustCompile(`strongSwan\s+([0-9]+\.[0-9]+(?:\.[0-9]+)?)`)
+
+// DetectVersion returns the installed strongSwan version via swanctl --version.
+func DetectVersion() string {
+	out, err := exec.Command(swanctlBinary, "--version").CombinedOutput()
+	if err != nil && len(out) == 0 {
+		return "unknown"
+	}
+	if m := strongswanVersionRe.FindStringSubmatch(string(out)); len(m) == 2 {
+		return m[1]
+	}
+	return "unknown"
+}
 
 type lifecycleState uint8
 
@@ -208,7 +223,7 @@ func (o *IKEv2) Started() bool {
 	return o.state == lifecycleRunning
 }
 
-func (o *IKEv2) Version() string { return "strongswan" }
+func (o *IKEv2) Version() string { return DetectVersion() }
 
 func (o *IKEv2) Logs() <-chan string { return o.logChan }
 

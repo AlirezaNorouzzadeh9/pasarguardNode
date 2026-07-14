@@ -192,6 +192,9 @@ func CheckDeps() error {
 	return nil
 }
 
+// DetectVersion returns the installed openvpn version (independent of running).
+func DetectVersion() string { return detectVersion() }
+
 func detectVersion() string {
 	out, err := exec.Command("openvpn", "--version").Output()
 	if err != nil && len(out) == 0 {

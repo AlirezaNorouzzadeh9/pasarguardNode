@@ -38,6 +38,12 @@ type Controller struct {
 	stats       *common.SystemStatsResponse
 	cancelFunc  context.CancelFunc
 	mu          sync.RWMutex
+
+	// Installed-backend capabilities are detected once (they don't change while
+	// the node runs) and reused, since version probes exec external commands.
+	capsOnce     sync.Once
+	capsAvail    []common.BackendType
+	capsVersions map[string]string
 }
 
 func New(cfg *config.Config) *Controller {
@@ -295,12 +301,14 @@ func (c *Controller) SystemStats(ctx context.Context) *common.SystemStatsRespons
 
 func (c *Controller) BaseInfoResponse() *common.BaseInfoResponse {
 	back := c.Backend()
+	avail, versions := c.capabilities()
 
 	response := &common.BaseInfoResponse{
 		Started:           false,
 		CoreVersion:       "",
 		NodeVersion:       NodeVersion,
-		AvailableBackends: availableBackends(),
+		AvailableBackends: avail,
+		BackendVersions:   versions,
 	}
 
 	if back != nil {
@@ -311,22 +319,31 @@ func (c *Controller) BaseInfoResponse() *common.BaseInfoResponse {
 	return response
 }
 
-// availableBackends reports which backend types this node can actually run,
-// based on whether their OS-level dependencies are installed. xray needs none;
-// the others are probed via each backend's CheckDeps. The panel uses this to
-// grey out cores a node cannot serve.
-func availableBackends() []common.BackendType {
-	out := []common.BackendType{common.BackendType_XRAY}
-	if openvpn.CheckDeps() == nil {
-		out = append(out, common.BackendType_OPENVPN)
-	}
-	if wireguard.CheckDeps() == nil {
-		out = append(out, common.BackendType_WIREGUARD)
-	}
-	if ikev2.CheckDeps() == nil {
-		out = append(out, common.BackendType_IKEV2)
-	}
-	return out
+// capabilities reports which backend types this node can run (their OS-level
+// dependencies are installed) and each one's installed version. xray needs no
+// external dep; the others are probed via each backend's CheckDeps. Results are
+// cached because version detection execs external commands. The panel uses this
+// to grey out cores a node cannot serve and to show installed versions.
+func (c *Controller) capabilities() ([]common.BackendType, map[string]string) {
+	c.capsOnce.Do(func() {
+		avail := []common.BackendType{common.BackendType_XRAY}
+		versions := map[string]string{"xray": xray.DetectVersion(c.cfg.XrayExecutablePath)}
+		if openvpn.CheckDeps() == nil {
+			avail = append(avail, common.BackendType_OPENVPN)
+			versions["openvpn"] = openvpn.DetectVersion()
+		}
+		if wireguard.CheckDeps() == nil {
+			avail = append(avail, common.BackendType_WIREGUARD)
+			versions["wg"] = wireguard.DetectVersion()
+		}
+		if ikev2.CheckDeps() == nil {
+			avail = append(avail, common.BackendType_IKEV2)
+			versions["ikev2"] = ikev2.DetectVersion()
+		}
+		c.capsAvail = avail
+		c.capsVersions = versions
+	})
+	return c.capsAvail, c.capsVersions
 }
 
 func (c *Controller) OutboundsLatency(ctx context.Context, request *common.LatencyRequest) (*common.LatencyResponse, error) {
