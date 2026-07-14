@@ -2,14 +2,14 @@
 #
 # PasarGuard Node manager (multi-backend fork)
 # ---------------------------------------------
-# Command-driven installer that builds this fork's multi-backend node binary and
-# sets up only the backends you pick (xray always; openvpn / wireguard / ikev2
-# optional). It asks its questions up front (with strict validation), then runs
-# each install step quietly with colored progress, sets up VPN routing
-# (IP forwarding + NAT, persisted across reboots), opens the firewall, writes a
-# systemd service, and prints the details to register the node in the panel.
+# Builds this fork's multi-backend node binary and sets up only the backends you
+# pick (xray always; openvpn / wireguard / ikev2 optional). Run with no argument
+# for an interactive menu where you toggle each backend on/off and edit ports /
+# version / keys, then install. It runs each step quietly with colored progress,
+# sets up VPN routing (IP forwarding + NAT, persisted across reboots), opens the
+# firewall, writes a systemd service, and prints the details to register the node.
 #
-#   sudo bash install.sh                                   # interactive
+#   sudo bash install.sh                                   # interactive menu
 #   sudo bash install.sh install --backends openvpn,ikev2 \
 #        --xray-version v25.3.6 --api-key <uuid> --yes     # scripted
 #   sudo bash install.sh update | restart | status | logs | uninstall
@@ -39,19 +39,22 @@ NODE_HOST="${NODE_HOST:-0.0.0.0}"
 XRAY_PATH="/usr/local/bin/xray"
 
 XRAY_VERSION="${XRAY_VERSION:-}"   # blank -> latest
-BACKENDS=""                         # comma list; empty -> ask
-API_KEY=""                          # empty -> ask / auto-generate
+BACKENDS=""                         # comma list; empty -> none (xray only)
+API_KEY=""                          # empty -> auto-generate
 OPENVPN_PORT="${OPENVPN_PORT:-1194}"
 WG_PORT="${WG_PORT:-51820}"
 ASSUME_YES=0
 PUBLIC_IP=""
 
+# Per-backend toggles used by the interactive menu (seeded from --backends/env).
+WG_ON=0; OVPN_ON=0; IKEV2_ON=0
+
 # ---- colors / logging -------------------------------------------------------
 if [ -t 1 ]; then
   c_grn='\033[0;32m'; c_yel='\033[0;33m'; c_red='\033[0;31m'
-  c_cyn='\033[0;36m'; c_bld='\033[1m'; c_dim='\033[2m'; c_off='\033[0m'
+  c_cyn='\033[0;36m'; c_mag='\033[0;35m'; c_bld='\033[1m'; c_dim='\033[2m'; c_off='\033[0m'
 else
-  c_grn=''; c_yel=''; c_red=''; c_cyn=''; c_bld=''; c_dim=''; c_off=''
+  c_grn=''; c_yel=''; c_red=''; c_cyn=''; c_mag=''; c_bld=''; c_dim=''; c_off=''
 fi
 log()  { echo -e "${c_grn}[+]${c_off} $*"; }
 warn() { echo -e "${c_yel}[!]${c_off} $*"; }
@@ -59,6 +62,13 @@ err()  { echo -e "${c_red}[x]${c_off} $*" >&2; }
 die()  { err "$*"; exit 1; }
 hr()   { echo -e "${c_cyn}────────────────────────────────────────────────────────${c_off}"; }
 has()  { command -v "$1" >/dev/null 2>&1; }
+
+# Read that works even under `curl … | bash` (stdin is the script, not the user)
+# by pulling from the controlling terminal when one exists. Never fails the
+# script on EOF.
+_read() {
+  if [ -e /dev/tty ]; then read "$@" </dev/tty || true; else read "$@" || true; fi
+}
 
 # Run a step quietly: show a colored line, hide the command output (it goes to
 # the log), and report success/failure.
@@ -81,7 +91,7 @@ run_step() {
 ask_yn() {
   local q="$1" ans
   while true; do
-    read -r -p "$(echo -e "${c_bld}${q}${c_off} (y/n, Enter = no): ")" ans || true
+    _read -r -p "$(echo -e "${c_bld}${q}${c_off} (y/n, Enter = no): ")" ans
     case "${ans:-n}" in
       [Yy]|[Yy][Ee][Ss]) return 0 ;;
       [Nn]|[Nn][Oo])     return 1 ;;
@@ -93,7 +103,7 @@ ask_yn() {
 # Free text with a default.
 ask_val() {
   local q="$1" def="$2" ans
-  read -r -p "$(echo -e "${c_bld}${q}${c_off}${def:+ [${def}]}: ")" ans || true
+  _read -r -p "$(echo -e "${c_bld}${q}${c_off}${def:+ [${def}]}: ")" ans
   echo "${ans:-$def}"
 }
 
@@ -101,7 +111,7 @@ ask_val() {
 ask_num() {
   local q="$1" def="$2" ans
   while true; do
-    read -r -p "$(echo -e "${c_bld}${q}${c_off} [${def}]: ")" ans || true
+    _read -r -p "$(echo -e "${c_bld}${q}${c_off} [${def}]: ")" ans
     ans="${ans:-$def}"
     if [[ "$ans" =~ ^[0-9]+$ ]] && [ "$ans" -ge 1 ] && [ "$ans" -le 65535 ]; then
       echo "$ans"; return
@@ -142,6 +152,20 @@ detect_public_ip() {
 # and NAT) is selected. Xray does its own egress, so it is not counted here.
 needs_vpn_net() { want openvpn || want wireguard || want ikev2; }
 
+# Keep the CSV (used by want/install steps) and the menu toggles in sync.
+sync_toggles_from_backends() {
+  want wireguard && WG_ON=1 || WG_ON=0
+  want openvpn   && OVPN_ON=1 || OVPN_ON=0
+  want ikev2     && IKEV2_ON=1 || IKEV2_ON=0
+}
+rebuild_backends_from_toggles() {
+  BACKENDS=""
+  [ "$OVPN_ON"  -eq 1 ] && BACKENDS="$BACKENDS,openvpn"
+  [ "$WG_ON"    -eq 1 ] && BACKENDS="$BACKENDS,wireguard"
+  [ "$IKEV2_ON" -eq 1 ] && BACKENDS="$BACKENDS,ikev2"
+  BACKENDS="${BACKENDS#,}"
+}
+
 usage() {
   cat <<EOF
 PasarGuard Node manager
@@ -149,12 +173,14 @@ PasarGuard Node manager
 Usage: sudo bash install.sh [command] [options]
 
 Commands:
-  install (default)   Install / reinstall the node (interactive)
+  (no command)        Open the interactive menu (toggle backends, then install)
+  menu                Same as above
+  install             Install / reinstall (menu unless -y or --backends given)
   update              Rebuild from the latest source and restart
   restart | status | logs
-  uninstall           Remove the service, binary and data
+  uninstall           Remove the service, binary, routing and data
 
-Install options (skip the matching prompt):
+Install options (skip the menu when combined with -y):
   --backends <list>     openvpn,wireguard,ikev2  (xray always)
   --xray-version <tag>  e.g. v25.3.6  (default: latest)
   --api-key <uuid>      (default: auto-generate)
@@ -164,7 +190,7 @@ Install options (skip the matching prompt):
   --wireguard-port <n>  WireGuard port to open (default: ${WG_PORT})
   --host <addr>         Listen address (default: ${NODE_HOST})
   --branch <name> | --repo <url>
-  -y, --yes             Non-interactive (use flags/defaults; skip prompts)
+  -y, --yes             Non-interactive (use flags/defaults; skip the menu)
   -h, --help
 EOF
 }
@@ -189,46 +215,83 @@ parse_install_args() {
   done
 }
 
-# ---- collect ALL answers up front (ordered), then install -------------------
-collect_inputs() {
-  if [ "$ASSUME_YES" -eq 1 ]; then
-    [ -z "$API_KEY" ] && API_KEY="$(gen_uuid)"
-    return
-  fi
-  hr
-  echo -e "${c_bld}PasarGuard Node — setup${c_off}"
-  echo -e "${c_dim}Answer each question. Yes/no questions accept only 'y' or 'n';"
-  echo -e "pressing Enter means 'no'. Anything else is rejected and re-asked.${c_off}"
-  hr
+gen_uuid() { [ -r /proc/sys/kernel/random/uuid ] && cat /proc/sys/kernel/random/uuid || (has uuidgen && uuidgen) || die "cannot generate a UUID"; }
 
-  # 1) Xray version
-  XRAY_VERSION="$(ask_val "Xray-core version to install (e.g. v25.3.6, blank = latest)" "$XRAY_VERSION")"
+# ---- interactive menu -------------------------------------------------------
+onoff() {
+  if [ "${1:-0}" -eq 1 ]; then echo -e "${c_grn}${c_bld}● ON${c_off}"; else echo -e "${c_dim}○ off${c_off}"; fi
+}
+press_enter() { echo; _read -r -p "$(echo -e "  ${c_dim}Press Enter to return to the menu…${c_off}")" _; }
 
-  # 2) Backends
-  echo -e "\n${c_bld}Backends to run${c_off} (xray is always installed):"
-  local sel=""
-  ask_yn "  Install OpenVPN?"           && sel="$sel,openvpn"
-  ask_yn "  Install WireGuard?"         && sel="$sel,wireguard"
-  ask_yn "  Install IKEv2 (strongSwan)?" && sel="$sel,ikev2"
-  BACKENDS="${sel#,}"
-
-  # 3) Ports for the selected backends
-  echo -e "\n${c_bld}Ports${c_off}:"
-  want openvpn   && OPENVPN_PORT="$(ask_num "  OpenVPN listen port (match the panel core)" "$OPENVPN_PORT")"
-  want wireguard && WG_PORT="$(ask_num "  WireGuard listen port (match the panel core)" "$WG_PORT")"
-
-  # 4) Node port (the node listens here; the panel connects here in gRPC mode)
-  #    and API port (only used by the panel in REST connection mode).
-  SERVICE_PORT="$(ask_num "  Node port (the node listens here; gRPC connects here)" "$SERVICE_PORT")"
-  API_PORT="$(ask_num "  API port (panel form; only used in REST mode)" "$API_PORT")"
-
-  # 5) API key
+banner() {
+  clear 2>/dev/null || true
   echo
-  API_KEY="$(ask_val "  API key (blank = auto-generate)" "$API_KEY")"
-  [ -z "$API_KEY" ] && API_KEY="$(gen_uuid)"
+  echo -e "  ${c_cyn}${c_bld}╔══════════════════════════════════════════════════════╗${c_off}"
+  echo -e "  ${c_cyn}${c_bld}║${c_off}          ${c_bld}PasarGuard Node${c_off}  ${c_dim}·${c_off}  ${c_mag}${c_bld}multi-backend${c_off}          ${c_cyn}${c_bld}║${c_off}"
+  echo -e "  ${c_cyn}${c_bld}╚══════════════════════════════════════════════════════╝${c_off}"
+  echo
 }
 
-gen_uuid() { [ -r /proc/sys/kernel/random/uuid ] && cat /proc/sys/kernel/random/uuid || (has uuidgen && uuidgen) || die "cannot generate a UUID"; }
+menu_command() {
+  require_root; detect_pm
+  # The menu needs a terminal to read choices; without one (e.g. plain
+  # `curl … | bash` in a non-interactive context) fall back to guidance instead
+  # of spinning forever on empty reads.
+  if [ ! -e /dev/tty ] && [ ! -t 0 ]; then
+    die "no terminal for the interactive menu — run non-interactively, e.g.:
+  sudo bash install.sh install --backends wireguard,openvpn,ikev2 -y   (see --help)"
+  fi
+  sync_toggles_from_backends
+  local status="not installed"
+  [ -x "$BIN" ] && status="installed ($(systemctl is-active "$SERVICE" 2>/dev/null || echo unknown))"
+
+  while true; do
+    rebuild_backends_from_toggles
+    banner
+    echo -e "  ${c_dim}State:${c_off} ${c_bld}${status}${c_off}"
+    echo
+    echo -e "  ${c_bld}Backends${c_off} ${c_dim}(xray is always installed)${c_off}"
+    printf "    ${c_bld}1${c_off}  %-24s %b\n" "WireGuard"          "$(onoff "$WG_ON")"
+    printf "    ${c_bld}2${c_off}  %-24s %b\n" "OpenVPN"            "$(onoff "$OVPN_ON")"
+    printf "    ${c_bld}3${c_off}  %-24s %b\n" "IKEv2 (strongSwan)" "$(onoff "$IKEV2_ON")"
+    echo
+    echo -e "  ${c_bld}Settings${c_off}"
+    printf "    ${c_bld}4${c_off}  %-24s ${c_cyn}%s${c_off}\n" "Xray version"      "${XRAY_VERSION:-latest}"
+    [ "$WG_ON"   -eq 1 ] && printf "    ${c_bld}5${c_off}  %-24s ${c_cyn}%s${c_off}\n" "WireGuard port"  "$WG_PORT"
+    [ "$OVPN_ON" -eq 1 ] && printf "    ${c_bld}6${c_off}  %-24s ${c_cyn}%s${c_off}\n" "OpenVPN port"    "$OPENVPN_PORT"
+    printf "    ${c_bld}7${c_off}  %-24s ${c_cyn}%s${c_off}\n" "Node port (gRPC)"  "$SERVICE_PORT"
+    printf "    ${c_bld}8${c_off}  %-24s ${c_cyn}%s${c_off}\n" "API port"          "$API_PORT"
+    printf "    ${c_bld}9${c_off}  %-24s ${c_cyn}%s${c_off}\n" "API key"           "${API_KEY:-auto-generate}"
+    echo
+    echo -e "  ${c_bld}Actions${c_off}"
+    echo -e "    ${c_grn}${c_bld}i${c_off}  Install / reinstall with the selection above"
+    echo -e "    ${c_bld}u${c_off} Update   ${c_bld}s${c_off} Status   ${c_bld}l${c_off} Logs   ${c_bld}r${c_off} Restart   ${c_red}x${c_off} Uninstall"
+    echo -e "    ${c_bld}q${c_off} Quit"
+    echo
+    local choice
+    _read -r -p "$(echo -e "  ${c_bld}Select${c_off} ${c_dim}(number or letter)${c_off} ${c_cyn}❯${c_off} ")" choice
+    case "$choice" in
+      1) WG_ON=$((1 - WG_ON)) ;;
+      2) OVPN_ON=$((1 - OVPN_ON)) ;;
+      3) IKEV2_ON=$((1 - IKEV2_ON)) ;;
+      4) XRAY_VERSION="$(ask_val "Xray-core version (e.g. v25.3.6, blank = latest)" "$XRAY_VERSION")" ;;
+      5) WG_PORT="$(ask_num "WireGuard listen port (match the panel core)" "$WG_PORT")" ;;
+      6) OPENVPN_PORT="$(ask_num "OpenVPN listen port (match the panel core)" "$OPENVPN_PORT")" ;;
+      7) SERVICE_PORT="$(ask_num "Node port (gRPC connects here)" "$SERVICE_PORT")" ;;
+      8) API_PORT="$(ask_num "API port (panel form; REST mode only)" "$API_PORT")" ;;
+      9) API_KEY="$(ask_val "API key (blank = auto-generate)" "$API_KEY")" ;;
+      i|I) rebuild_backends_from_toggles; echo; run_install; break ;;
+      u|U) echo; update_command; press_enter ;;
+      s|S) echo; status_command; press_enter ;;
+      l|L) echo; logs_command ;;
+      r|R) echo; restart_command; press_enter ;;
+      x|X) echo; uninstall_command; press_enter; status="not installed" ;;
+      q|Q) echo; exit 0 ;;
+      "") : ;;
+      *) warn "Unknown option: '${choice}'"; sleep 1 ;;
+    esac
+  done
+}
 
 # ---- install steps (each quiet; run via run_step) ---------------------------
 install_base_deps() { pm_update || true; pm_install curl git ca-certificates openssl iptables; }
@@ -253,7 +316,16 @@ install_xray() {
   curl -fsSL https://github.com/PasarGuard/scripts/raw/main/install_core.sh | bash -s -- $args
 }
 install_openvpn()   { pm_install openvpn; }
-install_wireguard() { case "$PM" in apt) pm_install wireguard || pm_install wireguard-tools ;; *) pm_install wireguard-tools ;; esac; modprobe wireguard 2>/dev/null || true; }
+install_wireguard() {
+  case "$PM" in
+    apt) pm_install wireguard || pm_install wireguard-tools ;;
+    *)   pm_install wireguard-tools ;;
+  esac
+  # Load the module now and on every boot. (The node also triggers a load when it
+  # creates the interface, but persisting it avoids a cold-boot race.)
+  modprobe wireguard 2>/dev/null || true
+  echo wireguard > /etc/modules-load.d/wireguard.conf 2>/dev/null || true
+}
 install_ikev2()     {
   case "$PM" in
     apt) pm_install strongswan strongswan-swanctl libcharon-extra-plugins ;;
@@ -428,13 +500,14 @@ print_summary() {
   hr
 }
 
-install_command() {
-  parse_install_args "$@"
+# Runs the actual install using the currently-set BACKENDS / ports / key. Both
+# the menu and the scripted (-y) path call this.
+run_install() {
   require_root; detect_pm
   : > "$STEP_LOG"
-  collect_inputs
+  [ -z "$API_KEY" ] && API_KEY="$(gen_uuid)"
   detect_public_ip
-  echo -e "\n${c_bld}Installing${c_off} ${c_dim}(details hidden — full log: ${STEP_LOG})${c_off}"
+  echo -e "${c_bld}Installing${c_off} ${c_dim}(backends: xray${BACKENDS:+, $BACKENDS}; details hidden — full log: ${STEP_LOG})${c_off}"
   run_step "Installing base tools"          install_base_deps
   run_step "Installing Go ${GO_VERSION}"    install_go
   run_step "Installing Xray-core${XRAY_VERSION:+ ${XRAY_VERSION}}" install_xray
@@ -447,6 +520,17 @@ install_command() {
   run_step "Configuring systemd service"    write_service
   run_step "Opening firewall ports"         open_firewall
   print_summary
+}
+
+install_command() {
+  parse_install_args "$@"
+  # Scripted when -y is given (or a non-interactive shell with backends chosen);
+  # otherwise fall through to the interactive menu, pre-seeded from any flags.
+  if [ "$ASSUME_YES" -eq 1 ]; then
+    run_install
+  else
+    menu_command
+  fi
 }
 
 update_command() {
@@ -484,12 +568,17 @@ uninstall_command() {
 }
 
 main() {
-  local cmd="install"
+  local cmd="menu"
   case "${1:-}" in
+    menu) cmd="menu"; shift ;;
     install|update|uninstall|restart|status|logs) cmd="$1"; shift ;;
     -h|--help) usage; exit 0 ;;
+    "") cmd="menu" ;;
+    -*) cmd="install" ;;                 # flags with no subcommand => install
+    *) die "unknown command: $1 (see --help)" ;;
   esac
   case "$cmd" in
+    menu)      menu_command ;;
     install)   install_command "$@" ;;
     update)    update_command ;;
     uninstall) uninstall_command ;;
