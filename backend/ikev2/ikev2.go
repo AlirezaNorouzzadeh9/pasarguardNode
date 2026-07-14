@@ -19,7 +19,9 @@ import (
 
 var errNotStarted = errors.New("ikev2 not started")
 
-var strongswanVersionRe = regexp.MustCompile(`strongSwan\s+([0-9]+\.[0-9]+(?:\.[0-9]+)?)`)
+// swanctl --version prints "strongSwan swanctl 5.9.5", so match the first
+// dotted version anywhere in the output (works without charon running).
+var strongswanVersionRe = regexp.MustCompile(`([0-9]+\.[0-9]+\.[0-9]+)`)
 
 // DetectVersion returns the installed strongSwan version via swanctl --version.
 func DetectVersion() string {
