@@ -209,9 +209,10 @@ collect_inputs() {
   want openvpn   && OPENVPN_PORT="$(ask_num "  OpenVPN listen port (match the panel core)" "$OPENVPN_PORT")"
   want wireguard && WG_PORT="$(ask_num "  WireGuard listen port (match the panel core)" "$WG_PORT")"
 
-  # 4) Node port + API port (for the panel registration form)
-  SERVICE_PORT="$(ask_num "  Node port (gRPC — the panel connects here)" "$SERVICE_PORT")"
-  API_PORT="$(ask_num "  API port (for the panel form)" "$API_PORT")"
+  # 4) Node port (the node listens here; the panel connects here in gRPC mode)
+  #    and API port (only used by the panel in REST connection mode).
+  SERVICE_PORT="$(ask_num "  Node port (the node listens here; gRPC connects here)" "$SERVICE_PORT")"
+  API_PORT="$(ask_num "  API port (panel form; only used in REST mode)" "$API_PORT")"
 
   # 5) API key
   echo
@@ -326,7 +327,8 @@ print_summary() {
   echo -e "  Service     : ${SERVICE}.service ($(systemctl is-active "$SERVICE" 2>/dev/null))"
   echo -e "  Backends    : ${c_bld}xray${BACKENDS:+, $BACKENDS}${c_off}"
   echo -e "  Address     : ${c_bld}${PUBLIC_IP}${c_off}"
-  echo -e "  Node port   : ${c_bld}${SERVICE_PORT}${c_off}   API port: ${API_PORT}"
+  echo -e "  Node port   : ${c_bld}${SERVICE_PORT}${c_off}   ${c_dim}(gRPC connects here; set as \"Node Port\" in the panel)${c_off}"
+  echo -e "  API port    : ${API_PORT}   ${c_dim}(panel form; only used in REST mode)${c_off}"
   want openvpn   && echo -e "  OpenVPN port: ${OPENVPN_PORT}  ${c_dim}(set the same in the panel core/override)${c_off}"
   want wireguard && echo -e "  WG port     : ${WG_PORT}  ${c_dim}(set the same in the panel core/override)${c_off}"
   want ikev2     && echo -e "  IKEv2 ports : 500, 4500 (UDP, fixed)"
