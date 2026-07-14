@@ -44,7 +44,13 @@ sudo bash install.sh restart | status | logs
 sudo bash install.sh uninstall
 ```
 
-Install options: `--backends <list>`, `--api-key <uuid>`, `--service-port <n>`,
+The interactive install asks, in order: **Xray version** (blank = latest),
+which **backends** to run (strict y/n — Enter means no), their **ports**, the
+**node port** + **API port**, and the **API key** (blank = auto). Each install
+step then runs quietly with colored progress.
+
+Install options (skip the matching prompt): `--backends <list>`,
+`--xray-version <tag>`, `--api-key <uuid>`, `--service-port <n>`, `--api-port <n>`,
 `--openvpn-port <n>`, `--wireguard-port <n>`, `--host <addr>`, `--branch <name>`,
 `-y/--yes`. See [`scripts/install.sh`](scripts/install.sh).
 
