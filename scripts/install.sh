@@ -457,7 +457,11 @@ RestartSec=3
 WantedBy=multi-user.target
 EOF
   systemctl daemon-reload
-  systemctl enable --now "$SERVICE"
+  systemctl enable "$SERVICE" >/dev/null 2>&1 || true
+  # restart (not `enable --now`): on a reinstall the service is already running,
+  # and `enable --now` would NOT reload the new unit — so a changed API key / env
+  # would never take effect and the panel would report an api-key mismatch.
+  systemctl restart "$SERVICE"
 }
 
 fw_allow() {
