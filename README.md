@@ -18,11 +18,25 @@
 You can find a full guide in docs https://docs.pasarguard.org/en/node/
 
 # One-Click Installation (Recommended)
-The easiest way to install PasarGuard Node is using our automated installation script:
+The easiest way to install this (multi-backend) PasarGuard Node is the bundled
+installer. It asks which backends to set up (xray is always installed;
+OpenVPN / WireGuard / IKEv2 are optional), installs their OS-level
+dependencies, builds the node binary, generates a TLS cert + API key, creates a
+systemd service, and prints the details to register the node in the panel.
 
 ```bash
-sudo bash -c "$(curl -sL https://github.com/PasarGuard/scripts/raw/main/pg-node.sh)" @ install
+# interactive (asks which backends)
+sudo bash -c "$(curl -sL https://github.com/AlirezaNorouzzadeh9/pasarguardNode/raw/feat/openvpn-ikev2/scripts/install.sh)"
 ```
+
+Non-interactive, e.g. an OpenVPN + IKEv2 node on port 62050:
+
+```bash
+sudo bash -c "$(curl -sL https://github.com/AlirezaNorouzzadeh9/pasarguardNode/raw/feat/openvpn-ikev2/scripts/install.sh)" @ --backends openvpn,ikev2 --port 62050 --yes
+```
+
+Flags: `--backends <list>`, `--port <n>`, `--host <addr>`, `--branch <name>`,
+`-y/--yes`, `--uninstall`. See [`scripts/install.sh`](scripts/install.sh).
 
 # Donation
 You can help PasarGuard team with your donations, [Click Here](https://donate.pasarguard.org/)
