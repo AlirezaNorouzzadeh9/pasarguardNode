@@ -28,9 +28,6 @@ DATA_DIR="${DATA_DIR:-/var/lib/pg-node}"
 CERT_DIR="$DATA_DIR/certs"
 SERVICE="${SERVICE:-pg-node}"
 UNIT="/etc/systemd/system/${SERVICE}.service"
-NAT_UNIT="/etc/systemd/system/${SERVICE}-nat.service"
-NAT_SCRIPT="$INSTALL_DIR/pg-node-nat.sh"
-SYSCTL_FILE="/etc/sysctl.d/99-${SERVICE}-forward.conf"
 STEP_LOG="/tmp/pg-node-install.log"
 
 SERVICE_PORT="${SERVICE_PORT:-62050}"
@@ -294,7 +291,9 @@ menu_command() {
 }
 
 # ---- install steps (each quiet; run via run_step) ---------------------------
-install_base_deps() { pm_update || true; pm_install curl git ca-certificates openssl iptables; }
+# iptables (openvpn/ikev2 NAT) and nftables (wireguard NAT) are the tools the
+# node's built-in per-backend host routing uses.
+install_base_deps() { pm_update || true; pm_install curl git ca-certificates openssl iptables nftables; }
 
 install_go() {
   if has go && go version 2>/dev/null | grep -q "go${GO_VERSION%.*}"; then
@@ -336,77 +335,11 @@ install_ikev2()     {
   systemctl disable --now strongswan strongswan-starter 2>/dev/null || true
 }
 
-# VPN backends only forward client traffic to the internet if the kernel has IP
-# forwarding on and the client pools are NAT'd (MASQUERADE) out the egress
-# interface. Neither the node binary nor the distro sets these up, so we do —
-# persisted across reboots via a sysctl drop-in and a oneshot systemd unit that
-# re-applies the (idempotent) iptables rules on every boot.
-configure_networking() {
-  cat > "$SYSCTL_FILE" <<EOF
-# PasarGuard Node — forward VPN client traffic
-net.ipv4.ip_forward = 1
-EOF
-  sysctl -p "$SYSCTL_FILE" >/dev/null 2>&1 || sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1 || true
-
-  cat > "$NAT_SCRIPT" <<'NAT'
-#!/usr/bin/env bash
-# Managed by the PasarGuard Node installer — VPN NAT + forwarding.
-# Idempotent: safe to run repeatedly (checks each rule before adding).
-set -u
-# The private ranges every VPN client pool falls into. The panel decides the
-# exact subnet per core; masquerading the whole private space covers any of them
-# without the node needing to know the pool. The node's own public traffic keeps
-# a public source address, so it never matches these rules.
-RANGES="10.0.0.0/8 172.16.0.0/12 192.168.0.0/16"
-EGRESS="$(ip -4 route get 1.1.1.1 2>/dev/null | grep -oP 'dev \K\S+' || true)"
-[ -n "$EGRESS" ] || EGRESS="$(ip -4 route show default 2>/dev/null | awk '/default/{print $5; exit}')"
-
-up() {
-  sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1 || true
-  for r in $RANGES; do
-    if [ -n "$EGRESS" ]; then
-      iptables -t nat -C POSTROUTING -s "$r" -o "$EGRESS" -j MASQUERADE 2>/dev/null \
-        || iptables -t nat -A POSTROUTING -s "$r" -o "$EGRESS" -j MASQUERADE
-    else
-      iptables -t nat -C POSTROUTING -s "$r" -j MASQUERADE 2>/dev/null \
-        || iptables -t nat -A POSTROUTING -s "$r" -j MASQUERADE
-    fi
-    iptables -C FORWARD -s "$r" -j ACCEPT 2>/dev/null || iptables -A FORWARD -s "$r" -j ACCEPT
-    iptables -C FORWARD -d "$r" -j ACCEPT 2>/dev/null || iptables -A FORWARD -d "$r" -j ACCEPT
-  done
-}
-down() {
-  for r in $RANGES; do
-    if [ -n "$EGRESS" ]; then
-      iptables -t nat -D POSTROUTING -s "$r" -o "$EGRESS" -j MASQUERADE 2>/dev/null || true
-    else
-      iptables -t nat -D POSTROUTING -s "$r" -j MASQUERADE 2>/dev/null || true
-    fi
-    iptables -D FORWARD -s "$r" -j ACCEPT 2>/dev/null || true
-    iptables -D FORWARD -d "$r" -j ACCEPT 2>/dev/null || true
-  done
-}
-case "${1:-up}" in down) down ;; *) up ;; esac
-NAT
-  chmod +x "$NAT_SCRIPT"
-
-  cat > "$NAT_UNIT" <<EOF
-[Unit]
-Description=PasarGuard Node VPN NAT and IP forwarding
-After=network-online.target
-Wants=network-online.target
-Before=${SERVICE}.service
-[Service]
-Type=oneshot
-RemainAfterExit=yes
-ExecStart=${NAT_SCRIPT} up
-ExecStop=${NAT_SCRIPT} down
-[Install]
-WantedBy=multi-user.target
-EOF
-  systemctl daemon-reload
-  systemctl enable --now "${SERVICE}-nat.service"
-}
+# NOTE: VPN NAT + IP forwarding is handled by the node itself — each backend
+# installs a scoped MASQUERADE rule for its own pool and enables ip_forward on
+# start (on by default; disable per backend with PG_NODE_{WG,OPENVPN,IKEV2}_HOST_ROUTING=0).
+# So the installer no longer sets up its own broad NAT; it just makes sure the
+# nftables/iptables tooling is present (see install_base_deps).
 
 build_node() {
   mkdir -p "$INSTALL_DIR"
@@ -490,7 +423,7 @@ print_summary() {
   want openvpn   && echo -e "  OpenVPN port: ${OPENVPN_PORT}  ${c_dim}(set the same in the panel core/override)${c_off}"
   want wireguard && echo -e "  WG port     : ${WG_PORT}  ${c_dim}(set the same in the panel core/override)${c_off}"
   want ikev2     && echo -e "  IKEv2 ports : 500, 4500 (UDP, fixed)"
-  needs_vpn_net  && echo -e "  Routing     : ${c_bld}IP forward + NAT on${c_off} ${c_dim}(persistent; ${SERVICE}-nat.service)${c_off}"
+  needs_vpn_net  && echo -e "  Routing     : ${c_bld}IP forward + NAT${c_off} ${c_dim}(handled by the node per backend, on by default)${c_off}"
   echo -e "  ${c_yel}API key${c_off}     : ${c_bld}${API_KEY}${c_off}"
   echo
   echo -e "  Paste this ${c_yel}Server CA${c_off} into the node's \"Server CA\" field"
@@ -520,7 +453,6 @@ run_install() {
   want ikev2     && run_step "Installing strongSwan (IKEv2)" install_ikev2
   run_step "Building node binary (may take a few minutes)"   build_node
   run_step "Generating TLS certificate"     gen_cert
-  needs_vpn_net && run_step "Configuring VPN routing (IP forward + NAT)" configure_networking
   run_step "Configuring systemd service"    write_service
   run_step "Opening firewall ports"         open_firewall
   print_summary
@@ -557,14 +489,14 @@ uninstall_command() {
   warn "Removing PasarGuard Node"
   systemctl disable --now "$SERVICE" 2>/dev/null || true
   rm -f "$UNIT"
-  # Tear down VPN routing (remove NAT rules while the script still exists, then
-  # drop the unit and the persistent forwarding drop-in).
-  if [ -f "$NAT_UNIT" ]; then
+  # Clean up the old installer's standalone NAT service / sysctl drop-in if a
+  # previous version left them behind (the node now does its own routing).
+  if [ -f "/etc/systemd/system/${SERVICE}-nat.service" ]; then
     systemctl disable --now "${SERVICE}-nat.service" 2>/dev/null || true
-    [ -x "$NAT_SCRIPT" ] && "$NAT_SCRIPT" down 2>/dev/null || true
-    rm -f "$NAT_UNIT"
+    [ -x "$INSTALL_DIR/pg-node-nat.sh" ] && "$INSTALL_DIR/pg-node-nat.sh" down 2>/dev/null || true
+    rm -f "/etc/systemd/system/${SERVICE}-nat.service"
   fi
-  rm -f "$SYSCTL_FILE"
+  rm -f "/etc/sysctl.d/99-${SERVICE}-forward.conf"
   systemctl daemon-reload 2>/dev/null || true
   rm -rf "$INSTALL_DIR"
   if ask_yn "Also remove data/certs in $DATA_DIR?"; then rm -rf "$DATA_DIR"; fi
