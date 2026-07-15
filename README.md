@@ -57,6 +57,30 @@ Install options (skip the matching prompt): `--backends <list>`,
 > A cloud firewall (DigitalOcean/AWS/Hetzner) must be opened separately — the
 > installer can only open the local `ufw`/`firewalld`.
 
+# Docker (compose)
+
+Prefer Docker? A prebuilt multi-backend image is published to this fork's GHCR,
+so you just drop a compose file and bring it up — no building on the node.
+
+```bash
+mkdir -p /opt/pg-node && cd /opt/pg-node
+curl -fsSL https://github.com/AlirezaNorouzzadeh9/pasarguardNode/raw/main/docker-compose.yml -o docker-compose.yml
+# set API_KEY to any UUID (the same one you enter for this node in the panel)
+sed -i "s/REPLACE-WITH-A-UUID/$(cat /proc/sys/kernel/random/uuid)/" docker-compose.yml
+docker compose up -d
+docker compose logs | sed -n '/Server CA/,/====/p'   # copy the CA into the panel
+```
+
+The image bundles xray, OpenVPN, WireGuard and strongSwan/charon (IKEv2). The
+container runs with `network_mode: host` and `cap_add: [NET_ADMIN, SYS_MODULE]`
+plus `/dev/net/tun` and `/lib/modules` so all four backends work; the entrypoint
+generates the node TLS certificate on first run and prints the **Server CA** to
+paste into the panel. Data (certs + generated configs) lives in
+`/var/lib/pg-node`.
+
+> Still open the VPN ports on any **cloud** firewall (host networking binds them
+> on the host directly).
+
 # Donation
 You can help PasarGuard team with your donations, [Click Here](https://donate.pasarguard.org/)
 
