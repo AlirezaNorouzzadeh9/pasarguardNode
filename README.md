@@ -18,44 +18,45 @@
 You can find a full guide in docs https://docs.pasarguard.org/en/node/
 
 # One-Click Installation (Recommended)
-The bundled installer sets up this (multi-backend) node: it asks which backends
-to run (xray is always installed; OpenVPN / WireGuard / IKEv2 are optional),
-installs their OS deps, **opens the needed firewall ports**, builds the binary,
-makes a TLS cert + API key, writes a systemd service, and prints the details to
-register the node in the panel.
+The bundled installer runs this (multi-backend) node **as a Docker container**:
+it installs Docker if missing, lets you toggle which backends run here, writes a
+`docker-compose.yml` (pulling this fork's prebuilt image — all backends baked
+in), brings the container up, and prints the Server CA + details to register the
+node in the panel. No building on the node.
 
 ```bash
-# interactive (asks which backends + ports)
+# interactive menu (toggle backends, set node port + API key, install)
 sudo bash -c "$(curl -sL https://github.com/AlirezaNorouzzadeh9/pasarguardNode/raw/main/scripts/install.sh)"
 ```
 
-Non-interactive, e.g. an OpenVPN + IKEv2 node with your own API key:
+Non-interactive, e.g. an xray + wireguard node (OpenVPN/IKEv2 disabled) with your
+own API key:
 
 ```bash
 sudo bash -c "$(curl -sL https://github.com/AlirezaNorouzzadeh9/pasarguardNode/raw/main/scripts/install.sh)" @ install \
-  --backends openvpn,ikev2 --api-key <uuid> --openvpn-port 1194 --yes
+  --disable openvpn,ikev2 --api-key <uuid> --service-port 62050 --yes
 ```
 
-It is command-driven like the upstream installer:
+Command-driven management (all via `docker compose` under the hood):
 
 ```bash
-sudo bash install.sh update      # rebuild from latest source + restart
+sudo bash install.sh update      # pull the latest image (or rebuild) + recreate
 sudo bash install.sh restart | status | logs
 sudo bash install.sh uninstall
 ```
 
-The interactive install asks, in order: **Xray version** (blank = latest),
-which **backends** to run (strict y/n — Enter means no), their **ports**, the
-**node port** + **API port**, and the **API key** (blank = auto). Each install
-step then runs quietly with colored progress.
+The interactive menu toggles the four **backends** (image ships all — off means
+`PG_NODE_DISABLE_*`), and sets the **node (gRPC) port**, the **API key** (blank =
+auto), and the **image source** (pull vs build from source). **VPN ports**
+(OpenVPN / WireGuard) live in the panel's core config; IKEv2 is always 500/4500.
 
-Install options (skip the matching prompt): `--backends <list>`,
-`--xray-version <tag>`, `--api-key <uuid>`, `--service-port <n>`, `--api-port <n>`,
-`--openvpn-port <n>`, `--wireguard-port <n>`, `--host <addr>`, `--branch <name>`,
-`-y/--yes`. See [`scripts/install.sh`](scripts/install.sh).
+Install options (skip the menu with `-y`): `--disable <list>`, `--api-key <uuid>`,
+`--service-port <n>`, `--image <ref>`, `--build`, `--branch <name>`, `--repo <url>`.
+See [`scripts/install.sh`](scripts/install.sh).
 
-> A cloud firewall (DigitalOcean/AWS/Hetzner) must be opened separately — the
-> installer can only open the local `ufw`/`firewalld`.
+> If the GHCR image can't be pulled (still private), the installer falls back to
+> building it from source; or make the package public. Open the VPN ports on any
+> **cloud** firewall too — host networking binds them on the host directly.
 
 # Docker (compose)
 
