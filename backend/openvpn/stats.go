@@ -178,6 +178,19 @@ func (o *OpenVPN) GetStats(ctx context.Context, request *common.StatRequest) (*c
 	}
 }
 
+// OnlineSnapshot reports how many users and distinct source IPs are currently
+// connected to this backend (for the node's per-protocol online summary).
+func (o *OpenVPN) OnlineSnapshot() (uint32, uint32) {
+	o.mu.RLock()
+	state := o.state
+	o.mu.RUnlock()
+	if state != lifecycleRunning {
+		return 0, 0
+	}
+	u, i := o.statsTracker.OnlineSnapshot(time.Now().Add(-onlineActivityThreshold))
+	return uint32(u), uint32(i)
+}
+
 func (o *OpenVPN) GetUserOnlineStats(ctx context.Context, email string) (*common.OnlineStatResponse, error) {
 	o.mu.RLock()
 	state := o.state

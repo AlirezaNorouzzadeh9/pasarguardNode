@@ -106,6 +106,12 @@ message BackendStatsResponse {
     uint32 uptime = 10;
 }
 
+// Online users / distinct source IPs currently connected on one backend.
+message OnlineCount {
+    uint32 users = 1;
+    uint32 ips = 2;
+}
+
 message SystemStatsResponse {
     uint64 mem_total = 1;
     uint64 mem_used = 2;
@@ -114,6 +120,8 @@ message SystemStatsResponse {
     uint64 incoming_bandwidth_speed = 5;
     uint64 outgoing_bandwidth_speed = 6;
     uint64 uptime = 7;
+    // Per-backend online summary, keyed by backend name: "xray"|"openvpn"|"wg"|"ikev2".
+    map<string, OnlineCount> online = 8;
 }
 
 // User

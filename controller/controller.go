@@ -264,9 +264,37 @@ func (c *Controller) recordSystemStats(ctx context.Context) {
 	}
 }
 
+// onlineSnapshotter is the optional interface a backend implements to report its
+// currently-online users and distinct source IPs. Kept out of the Backend
+// interface so it doesn't force every implementation (incl. test mocks) to add it.
+type onlineSnapshotter interface {
+	OnlineSnapshot() (users uint32, ips uint32)
+}
+
+// backendTypeKey maps a backend type to the short name the panel keys on (matches
+// the capabilities/versions naming: wireguard -> "wg").
+func backendTypeKey(t common.BackendType) string {
+	switch t {
+	case common.BackendType_XRAY:
+		return "xray"
+	case common.BackendType_OPENVPN:
+		return "openvpn"
+	case common.BackendType_WIREGUARD:
+		return "wg"
+	case common.BackendType_IKEV2:
+		return "ikev2"
+	default:
+		return t.String()
+	}
+}
+
 func (c *Controller) SystemStats(ctx context.Context) *common.SystemStatsResponse {
 	c.mu.RLock()
 	statsSnapshot := c.stats
+	typedBackends := make(map[common.BackendType]backend.Backend, len(c.backends))
+	for t, b := range c.backends {
+		typedBackends[t] = b
+	}
 	c.mu.RUnlock()
 
 	backendSnapshot := c.Backend()
@@ -282,6 +310,18 @@ func (c *Controller) SystemStats(ctx context.Context) *common.SystemStatsRespons
 			OutgoingBandwidthSpeed: statsSnapshot.GetOutgoingBandwidthSpeed(),
 			Uptime:                 statsSnapshot.GetUptime(),
 		}
+	}
+
+	// Per-backend online summary (users + distinct IPs), keyed by backend name.
+	if len(typedBackends) > 0 {
+		online := make(map[string]*common.OnlineCount, len(typedBackends))
+		for t, b := range typedBackends {
+			if snap, ok := b.(onlineSnapshotter); ok {
+				users, ips := snap.OnlineSnapshot()
+				online[backendTypeKey(t)] = &common.OnlineCount{Users: users, Ips: ips}
+			}
+		}
+		response.Online = online
 	}
 
 	if backendSnapshot == nil {
