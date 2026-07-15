@@ -28,18 +28,6 @@ type Xray struct {
 	userLimits  map[string]uint32       // email -> ip_limit (0 = unlimited)
 	userByEmail map[string]*common.User // email -> last-synced user (for re-admit)
 	kicked      map[string]time.Time    // email -> time disconnected for exceeding the limit
-	// cached per-backend online summary, refreshed by the enforcement pass.
-	cachedOnlineUsers uint32
-	cachedOnlineIPs   uint32
-}
-
-// OnlineSnapshot reports how many users and distinct source IPs are currently
-// online on xray (for the node's per-protocol online summary). Served from the
-// cache refreshed by the ip-limit enforcement pass to avoid extra xray-core RPCs.
-func (x *Xray) OnlineSnapshot() (uint32, uint32) {
-	x.limitMu.Lock()
-	defer x.limitMu.Unlock()
-	return x.cachedOnlineUsers, x.cachedOnlineIPs
 }
 
 func New(ctx context.Context, xrayConfig *Config, users []*common.User, apiPort, metricPort int, cfg *config.Config) (*Xray, error) {

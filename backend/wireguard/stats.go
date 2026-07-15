@@ -85,19 +85,6 @@ func (wg *WireGuard) GetStats(ctx context.Context, request *common.StatRequest) 
 	}
 }
 
-// OnlineSnapshot reports how many peers and distinct endpoint IPs are currently
-// active on this backend (for the node's per-protocol online summary).
-func (wg *WireGuard) OnlineSnapshot() (uint32, uint32) {
-	wg.mu.RLock()
-	state := wg.state
-	wg.mu.RUnlock()
-	if state != lifecycleRunning {
-		return 0, 0
-	}
-	u, i := wg.statsTracker.OnlineSnapshot(time.Now().Add(-onlineActivityThreshold))
-	return uint32(u), uint32(i)
-}
-
 func (wg *WireGuard) GetUserOnlineStats(ctx context.Context, email string) (*common.OnlineStatResponse, error) {
 	wg.mu.RLock()
 	state := wg.state

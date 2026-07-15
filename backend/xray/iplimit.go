@@ -72,17 +72,14 @@ func (x *Xray) enforceIpLimitsOnce(ctx context.Context) {
 	x.limitMu.Unlock()
 
 	now := time.Now()
-	var onlineUsers uint32
-	distinctIPs := make(map[string]struct{})
-
-	for email, u := range users {
+	for email, limit := range limits {
 		// A disconnected user is re-admitted once their cooldown elapses; while
-		// still cooling down their IP count is not re-checked or counted.
+		// still cooling down their IP count is not re-checked.
 		if kickedAt, ok := kicked[email]; ok {
 			if now.Sub(kickedAt) < ipLimitCooldown {
 				continue
 			}
-			if u != nil {
+			if u := users[email]; u != nil {
 				if err := x.SyncUser(ctx, u); err != nil {
 					continue // keep the kick; try again next tick
 				}
@@ -94,32 +91,23 @@ func (x *Xray) enforceIpLimitsOnce(ctx context.Context) {
 			continue
 		}
 
+		if limit == 0 {
+			continue
+		}
 		resp, err := x.GetUserOnlineIpListStats(ctx, email)
 		if err != nil || resp == nil {
 			continue
 		}
-		ips := resp.GetIps()
-		if len(ips) > 0 {
-			onlineUsers++
-			for ip := range ips {
-				distinctIPs[ip] = struct{}{}
-			}
+		if uint32(len(resp.GetIps())) <= limit {
+			continue
 		}
-
-		if limit := limits[email]; limit > 0 && uint32(len(ips)) > limit {
-			x.disconnectUser(ctx, email)
-			x.limitMu.Lock()
-			x.kicked[email] = now
-			x.limitMu.Unlock()
-			log.Printf("xray: user %s over device limit (%d IPs > %d), disconnecting for %s",
-				email, len(ips), limit, ipLimitCooldown)
-		}
+		x.disconnectUser(ctx, email)
+		x.limitMu.Lock()
+		x.kicked[email] = now
+		x.limitMu.Unlock()
+		log.Printf("xray: user %s over device limit (%d IPs > %d), disconnecting for %s",
+			email, len(resp.GetIps()), limit, ipLimitCooldown)
 	}
-
-	x.limitMu.Lock()
-	x.cachedOnlineUsers = onlineUsers
-	x.cachedOnlineIPs = uint32(len(distinctIPs))
-	x.limitMu.Unlock()
 }
 
 // disconnectUser removes a user from every (non-excluded) inbound, dropping all

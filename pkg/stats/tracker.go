@@ -45,25 +45,6 @@ func New() *Tracker {
 	}
 }
 
-// OnlineSnapshot returns how many users were active at/after cutoff and how many
-// distinct non-empty endpoint IPs those users connected from. Used to build the
-// per-backend online summary (openvpn/ikev2/wireguard all feed this tracker).
-func (st *Tracker) OnlineSnapshot(cutoff time.Time) (users int, ips int) {
-	st.mu.RLock()
-	defer st.mu.RUnlock()
-	ipSet := make(map[string]struct{})
-	for _, e := range st.stats {
-		if e.IsDeleted || e.LastActiveTime.Before(cutoff) {
-			continue
-		}
-		users++
-		if e.EndpointIP != "" {
-			ipSet[e.EndpointIP] = struct{}{}
-		}
-	}
-	return users, len(ipSet)
-}
-
 // UpdateStatsBatch applies many peer stats updates under a single lock.
 func (st *Tracker) UpdateStatsBatch(samples []Sample) {
 	if len(samples) == 0 {

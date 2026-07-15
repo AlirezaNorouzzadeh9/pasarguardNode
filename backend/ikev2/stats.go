@@ -162,19 +162,6 @@ func (o *IKEv2) GetStats(ctx context.Context, request *common.StatRequest) (*com
 	}
 }
 
-// OnlineSnapshot reports how many users and distinct client IPs currently hold
-// an SA on this backend (for the node's per-protocol online summary).
-func (o *IKEv2) OnlineSnapshot() (uint32, uint32) {
-	o.mu.RLock()
-	state := o.state
-	o.mu.RUnlock()
-	if state != lifecycleRunning {
-		return 0, 0
-	}
-	u, i := o.statsTracker.OnlineSnapshot(time.Now().Add(-onlineActivityThreshold))
-	return uint32(u), uint32(i)
-}
-
 func (o *IKEv2) GetUserOnlineStats(ctx context.Context, email string) (*common.OnlineStatResponse, error) {
 	o.mu.RLock()
 	state := o.state
