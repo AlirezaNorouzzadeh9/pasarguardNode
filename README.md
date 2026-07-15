@@ -69,7 +69,7 @@ curl -fsSL https://github.com/AlirezaNorouzzadeh9/pasarguardNode/raw/main/docker
 # set API_KEY to any UUID (the same one you enter for this node in the panel)
 sed -i "s/REPLACE-WITH-A-UUID/$(cat /proc/sys/kernel/random/uuid)/" docker-compose.yml
 docker compose up -d
-docker compose logs | sed -n '/Server CA/,/====/p'   # copy the CA into the panel
+cat /var/lib/pg-node/certs/ssl_cert.pem   # the Server CA to paste into the panel
 ```
 
 The image bundles xray, OpenVPN, WireGuard and strongSwan/charon (IKEv2). The

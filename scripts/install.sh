@@ -268,11 +268,11 @@ compose_up()   { dc up -d $([ "$BUILD_FROM_SOURCE" = 1 ] && echo --build); }
 pull_image()   { dc pull; }
 
 print_summary() {
-  # Give the container a moment to generate its cert and print the CA.
-  local ca="" i
+  # Read the CA straight from the mounted cert file (no `docker logs` prefix, so
+  # it copy-pastes cleanly). Wait for the container to generate it on first run.
+  local ca="" i cert_file="$DATA_DIR/certs/ssl_cert.pem"
   for i in $(seq 1 20); do
-    ca="$(dc logs node 2>&1 | sed -n '/BEGIN CERTIFICATE/,/END CERTIFICATE/p')"
-    [ -n "$ca" ] && break
+    [ -s "$cert_file" ] && { ca="$(cat "$cert_file")"; break; }
     sleep 1
   done
   local ip; ip="$(curl -fsS4 --max-time 5 https://api.ipify.org 2>/dev/null || echo '<server-ip>')"
@@ -297,7 +297,7 @@ print_summary() {
     echo "$ca"
   else
     warn "Couldn't read the Server CA yet — get it with:"
-    echo -e "  ${c_dim}${COMPOSE_CMD} -f ${COMPOSE_FILE} logs node | sed -n '/BEGIN CERT/,/END CERT/p'${c_off}"
+    echo -e "  ${c_dim}cat ${cert_file}${c_off}"
   fi
   echo
   echo -e "  ${c_dim}Logs:${c_off} ${COMPOSE_CMD} -f ${COMPOSE_FILE} logs -f"
