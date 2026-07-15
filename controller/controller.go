@@ -3,7 +3,10 @@ package controller
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
+	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -118,7 +121,30 @@ func (c *Controller) NewRequest() {
 // to the node's backend set. Calling it repeatedly with different types lets one
 // node run several cores side by side; calling it again for the same type shuts
 // the old instance down and swaps in the new one.
+// backendDisabled reports whether an operator has turned a backend off on this
+// node via PG_NODE_DISABLE_<TYPE>=1 (regardless of what the panel assigns). Lets
+// a container run a fixed subset of backends like the interactive installer does.
+func backendDisabled(t common.BackendType) bool {
+	names := map[common.BackendType][]string{
+		common.BackendType_XRAY:      {"PG_NODE_DISABLE_XRAY"},
+		common.BackendType_OPENVPN:   {"PG_NODE_DISABLE_OPENVPN"},
+		common.BackendType_WIREGUARD: {"PG_NODE_DISABLE_WIREGUARD", "PG_NODE_DISABLE_WG"},
+		common.BackendType_IKEV2:     {"PG_NODE_DISABLE_IKEV2"},
+	}
+	for _, n := range names[t] {
+		switch strings.ToLower(strings.TrimSpace(os.Getenv(n))) {
+		case "1", "true", "yes", "on":
+			return true
+		}
+	}
+	return false
+}
+
 func (c *Controller) StartBackend(ctx context.Context, backendCfg *common.Backend) error {
+	if backendDisabled(backendCfg.GetType()) {
+		return fmt.Errorf("backend %q is disabled on this node (PG_NODE_DISABLE_*)", backendTypeKey(backendCfg.GetType()))
+	}
+
 	var newBackend backend.Backend
 
 	switch backendCfg.GetType() {
@@ -376,17 +402,23 @@ func (c *Controller) BaseInfoResponse() *common.BaseInfoResponse {
 // to grey out cores a node cannot serve and to show installed versions.
 func (c *Controller) capabilities() ([]common.BackendType, map[string]string) {
 	c.capsOnce.Do(func() {
-		avail := []common.BackendType{common.BackendType_XRAY}
-		versions := map[string]string{"xray": xray.DetectVersion(c.cfg.XrayExecutablePath)}
-		if openvpn.CheckDeps() == nil {
+		var avail []common.BackendType
+		versions := map[string]string{}
+		// A backend counts as available only if it isn't disabled by env AND its
+		// OS deps are present; the panel greys out the rest.
+		if !backendDisabled(common.BackendType_XRAY) {
+			avail = append(avail, common.BackendType_XRAY)
+			versions["xray"] = xray.DetectVersion(c.cfg.XrayExecutablePath)
+		}
+		if !backendDisabled(common.BackendType_OPENVPN) && openvpn.CheckDeps() == nil {
 			avail = append(avail, common.BackendType_OPENVPN)
 			versions["openvpn"] = openvpn.DetectVersion()
 		}
-		if wireguard.CheckDeps() == nil {
+		if !backendDisabled(common.BackendType_WIREGUARD) && wireguard.CheckDeps() == nil {
 			avail = append(avail, common.BackendType_WIREGUARD)
 			versions["wg"] = wireguard.DetectVersion()
 		}
-		if ikev2.CheckDeps() == nil {
+		if !backendDisabled(common.BackendType_IKEV2) && ikev2.CheckDeps() == nil {
 			avail = append(avail, common.BackendType_IKEV2)
 			versions["ikev2"] = ikev2.DetectVersion()
 		}

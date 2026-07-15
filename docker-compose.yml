@@ -24,6 +24,14 @@ services:
       # override with PG_NODE_WG_NAT_OUTPUT_INTERFACE, e.g. eth0).
       PG_NODE_WG_HOST_ROUTING: "1"
 
+      # The image ships every backend; the panel decides which cores run here.
+      # To hard-disable one at the node regardless of the panel (it's then greyed
+      # out in the panel too), uncomment — e.g. an xray+wireguard-only node:
+      # PG_NODE_DISABLE_OPENVPN: "1"
+      # PG_NODE_DISABLE_IKEV2: "1"
+      # PG_NODE_DISABLE_WIREGUARD: "1"
+      # PG_NODE_DISABLE_XRAY: "1"
+
     volumes:
       - /lib/modules:/lib/modules:ro   # WireGuard kernel module from the host
       - /var/lib/pg-node:/var/lib/pg-node

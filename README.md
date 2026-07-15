@@ -81,6 +81,21 @@ paste into the panel. Data (certs + generated configs) lives in
 > Still open the VPN ports on any **cloud** firewall (host networking binds them
 > on the host directly).
 
+### Choosing which backends run
+
+The node is panel-driven: it runs whatever cores the panel assigns, and the image
+ships all four backends. **Ports** (OpenVPN, WireGuard) are set in the panel's core
+config / per-node override; **IKEv2** is always UDP 500 + 4500. To run only a
+subset, either just don't assign a core to the node, or hard-disable a backend at
+the node with an env var (it's then also greyed out in the panel):
+
+| Env | Effect |
+| --- | --- |
+| `PG_NODE_DISABLE_XRAY=1` | never run xray on this node |
+| `PG_NODE_DISABLE_OPENVPN=1` | never run OpenVPN |
+| `PG_NODE_DISABLE_WIREGUARD=1` | never run WireGuard |
+| `PG_NODE_DISABLE_IKEV2=1` | never run IKEv2 |
+
 # Donation
 You can help PasarGuard team with your donations, [Click Here](https://donate.pasarguard.org/)
 
