@@ -168,6 +168,13 @@ func (v *viciSession) listSAs() ([]saInfo, error) {
 				Remote:   msgString(ike, "remote-host"),
 				IKEID:    uint32(parseInt64(msgString(ike, "uniqueid"))),
 			}
+			// EAP-MSCHAPv2 SAs frequently omit remote-eap-id; the client sends its
+			// username (= user id) as the IKE identity instead, so fall back to
+			// remote-id. Without this the SA is dropped and the user shows no
+			// online IP and escapes the device limit.
+			if info.Identity == "" {
+				info.Identity = msgString(ike, "remote-id")
+			}
 			// Sum child SA byte counters.
 			if childs, ok := ike.Get("child-sas").(*vici.Message); ok {
 				for _, ck := range childs.Keys() {
