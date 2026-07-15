@@ -299,6 +299,56 @@ func (c *Controller) SystemStats(ctx context.Context) *common.SystemStatsRespons
 	return response
 }
 
+// backendTypeKey maps a backend type to the short name the panel keys on
+// (matches the capabilities/versions naming: wireguard -> "wg").
+func backendTypeKey(t common.BackendType) string {
+	switch t {
+	case common.BackendType_XRAY:
+		return "xray"
+	case common.BackendType_OPENVPN:
+		return "openvpn"
+	case common.BackendType_WIREGUARD:
+		return "wg"
+	case common.BackendType_IKEV2:
+		return "ikev2"
+	default:
+		return t.String()
+	}
+}
+
+// UserOnlineIpList merges every backend's online IPs for a user and tags each IP
+// with the backend it is connected through. It makes the same backend calls the
+// composite already makes, but keeps the protocol attribution the composite
+// flattens away.
+func (c *Controller) UserOnlineIpList(ctx context.Context, email string) *common.StatsOnlineIpListResponse {
+	c.mu.RLock()
+	typed := make(map[common.BackendType]backend.Backend, len(c.backends))
+	for t, b := range c.backends {
+		typed[t] = b
+	}
+	c.mu.RUnlock()
+
+	resp := &common.StatsOnlineIpListResponse{
+		Name:       email,
+		Ips:        map[string]int64{},
+		IpProtocol: map[string]string{},
+	}
+	for t, b := range typed {
+		s, err := b.GetUserOnlineIpListStats(ctx, email)
+		if err != nil || s == nil {
+			continue
+		}
+		proto := backendTypeKey(t)
+		for ip, ts := range s.GetIps() {
+			if ts >= resp.Ips[ip] {
+				resp.Ips[ip] = ts
+				resp.IpProtocol[ip] = proto
+			}
+		}
+	}
+	return resp
+}
+
 func (c *Controller) BaseInfoResponse() *common.BaseInfoResponse {
 	back := c.Backend()
 	avail, versions := c.capabilities()

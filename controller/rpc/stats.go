@@ -25,12 +25,9 @@ func (s *Service) GetUserOnlineStats(ctx context.Context, request *common.StatRe
 }
 
 func (s *Service) GetUserOnlineIpListStats(ctx context.Context, request *common.StatRequest) (*common.StatsOnlineIpListResponse, error) {
-	stats, err := s.Backend().GetUserOnlineIpListStats(ctx, request.GetName())
-	if err != nil {
-		err = common.InterceptNotFound(err)
-		return nil, err
-	}
-	return stats, nil
+	// Controller-level so each IP keeps the backend (protocol) it came through;
+	// the composite would merge them and drop that attribution.
+	return s.UserOnlineIpList(ctx, request.GetName()), nil
 }
 
 func (s *Service) GetBackendStats(ctx context.Context, _ *common.Empty) (*common.BackendStatsResponse, error) {

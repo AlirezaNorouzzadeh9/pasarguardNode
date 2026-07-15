@@ -73,6 +73,8 @@ message OnlineStatResponse {
 message StatsOnlineIpListResponse {
   string name = 1;
   map<string, int64> ips = 2;
+  // Per-IP backend the IP is connected through: "xray"|"openvpn"|"wg"|"ikev2".
+  map<string, string> ip_protocol = 3;
 }
 
 message Latency {

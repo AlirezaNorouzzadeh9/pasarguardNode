@@ -594,9 +594,11 @@ func (x *OnlineStatResponse) GetValue() int64 {
 }
 
 type StatsOnlineIpListResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
-	Ips           map[string]int64       `protobuf:"bytes,2,rep,name=ips,proto3" json:"ips,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"varint,2,opt,name=value"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Name  string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	Ips   map[string]int64       `protobuf:"bytes,2,rep,name=ips,proto3" json:"ips,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"varint,2,opt,name=value"`
+	// Per-IP backend the IP is connected through: "xray"|"openvpn"|"wg"|"ikev2".
+	IpProtocol    map[string]string `protobuf:"bytes,3,rep,name=ip_protocol,json=ipProtocol,proto3" json:"ip_protocol,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -641,6 +643,13 @@ func (x *StatsOnlineIpListResponse) GetName() string {
 func (x *StatsOnlineIpListResponse) GetIps() map[string]int64 {
 	if x != nil {
 		return x.Ips
+	}
+	return nil
+}
+
+func (x *StatsOnlineIpListResponse) GetIpProtocol() map[string]string {
+	if x != nil {
+		return x.IpProtocol
 	}
 	return nil
 }
@@ -1741,13 +1750,18 @@ const file_common_service_proto_rawDesc = "" +
 	"\x04type\x18\x03 \x01(\x0e2\x11.service.StatTypeR\x04type\">\n" +
 	"\x12OnlineStatResponse\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\x03R\x05value\"\xa6\x01\n" +
+	"\x05value\x18\x02 \x01(\x03R\x05value\"\xba\x02\n" +
 	"\x19StatsOnlineIpListResponse\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12=\n" +
-	"\x03ips\x18\x02 \x03(\v2+.service.StatsOnlineIpListResponse.IpsEntryR\x03ips\x1a6\n" +
+	"\x03ips\x18\x02 \x03(\v2+.service.StatsOnlineIpListResponse.IpsEntryR\x03ips\x12S\n" +
+	"\vip_protocol\x18\x03 \x03(\v22.service.StatsOnlineIpListResponse.IpProtocolEntryR\n" +
+	"ipProtocol\x1a6\n" +
 	"\bIpsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\x03R\x05value:\x028\x01\"\xbf\x01\n" +
+	"\x05value\x18\x02 \x01(\x03R\x05value:\x028\x01\x1a=\n" +
+	"\x0fIpProtocolEntry\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"\xbf\x01\n" +
 	"\aLatency\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x14\n" +
 	"\x05alive\x18\x02 \x01(\bR\x05alive\x12\x14\n" +
@@ -1864,7 +1878,7 @@ func file_common_service_proto_rawDescGZIP() []byte {
 }
 
 var file_common_service_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_common_service_proto_msgTypes = make([]protoimpl.MessageInfo, 28)
+var file_common_service_proto_msgTypes = make([]protoimpl.MessageInfo, 29)
 var file_common_service_proto_goTypes = []any{
 	(BackendType)(0),                  // 0: service.BackendType
 	(StatType)(0),                     // 1: service.StatType
@@ -1896,6 +1910,7 @@ var file_common_service_proto_goTypes = []any{
 	(*UsersChunk)(nil),                // 27: service.UsersChunk
 	nil,                               // 28: service.BaseInfoResponse.BackendVersionsEntry
 	nil,                               // 29: service.StatsOnlineIpListResponse.IpsEntry
+	nil,                               // 30: service.StatsOnlineIpListResponse.IpProtocolEntry
 }
 var file_common_service_proto_depIdxs = []int32{
 	0,  // 0: service.BaseInfoResponse.available_backends:type_name -> service.BackendType
@@ -1905,49 +1920,50 @@ var file_common_service_proto_depIdxs = []int32{
 	6,  // 4: service.StatResponse.stats:type_name -> service.Stat
 	1,  // 5: service.StatRequest.type:type_name -> service.StatType
 	29, // 6: service.StatsOnlineIpListResponse.ips:type_name -> service.StatsOnlineIpListResponse.IpsEntry
-	11, // 7: service.LatencyResponse.latencies:type_name -> service.Latency
-	16, // 8: service.Proxy.vmess:type_name -> service.Vmess
-	17, // 9: service.Proxy.vless:type_name -> service.Vless
-	18, // 10: service.Proxy.trojan:type_name -> service.Trojan
-	19, // 11: service.Proxy.shadowsocks:type_name -> service.Shadowsocks
-	20, // 12: service.Proxy.wireguard:type_name -> service.Wireguard
-	21, // 13: service.Proxy.hysteria:type_name -> service.Hysteria
-	22, // 14: service.Proxy.openvpn:type_name -> service.Openvpn
-	23, // 15: service.Proxy.ikev2:type_name -> service.Ikev2
-	24, // 16: service.User.proxies:type_name -> service.Proxy
-	25, // 17: service.Users.users:type_name -> service.User
-	25, // 18: service.UsersChunk.users:type_name -> service.User
-	4,  // 19: service.NodeService.Start:input_type -> service.Backend
-	2,  // 20: service.NodeService.Stop:input_type -> service.Empty
-	2,  // 21: service.NodeService.GetBaseInfo:input_type -> service.Empty
-	2,  // 22: service.NodeService.GetLogs:input_type -> service.Empty
-	2,  // 23: service.NodeService.GetSystemStats:input_type -> service.Empty
-	2,  // 24: service.NodeService.GetBackendStats:input_type -> service.Empty
-	8,  // 25: service.NodeService.GetStats:input_type -> service.StatRequest
-	12, // 26: service.NodeService.GetOutboundsLatency:input_type -> service.LatencyRequest
-	8,  // 27: service.NodeService.GetUserOnlineStats:input_type -> service.StatRequest
-	8,  // 28: service.NodeService.GetUserOnlineIpListStats:input_type -> service.StatRequest
-	25, // 29: service.NodeService.SyncUser:input_type -> service.User
-	26, // 30: service.NodeService.SyncUsers:input_type -> service.Users
-	27, // 31: service.NodeService.SyncUsersChunked:input_type -> service.UsersChunk
-	3,  // 32: service.NodeService.Start:output_type -> service.BaseInfoResponse
-	2,  // 33: service.NodeService.Stop:output_type -> service.Empty
-	3,  // 34: service.NodeService.GetBaseInfo:output_type -> service.BaseInfoResponse
-	5,  // 35: service.NodeService.GetLogs:output_type -> service.Log
-	15, // 36: service.NodeService.GetSystemStats:output_type -> service.SystemStatsResponse
-	14, // 37: service.NodeService.GetBackendStats:output_type -> service.BackendStatsResponse
-	7,  // 38: service.NodeService.GetStats:output_type -> service.StatResponse
-	13, // 39: service.NodeService.GetOutboundsLatency:output_type -> service.LatencyResponse
-	9,  // 40: service.NodeService.GetUserOnlineStats:output_type -> service.OnlineStatResponse
-	10, // 41: service.NodeService.GetUserOnlineIpListStats:output_type -> service.StatsOnlineIpListResponse
-	2,  // 42: service.NodeService.SyncUser:output_type -> service.Empty
-	2,  // 43: service.NodeService.SyncUsers:output_type -> service.Empty
-	2,  // 44: service.NodeService.SyncUsersChunked:output_type -> service.Empty
-	32, // [32:45] is the sub-list for method output_type
-	19, // [19:32] is the sub-list for method input_type
-	19, // [19:19] is the sub-list for extension type_name
-	19, // [19:19] is the sub-list for extension extendee
-	0,  // [0:19] is the sub-list for field type_name
+	30, // 7: service.StatsOnlineIpListResponse.ip_protocol:type_name -> service.StatsOnlineIpListResponse.IpProtocolEntry
+	11, // 8: service.LatencyResponse.latencies:type_name -> service.Latency
+	16, // 9: service.Proxy.vmess:type_name -> service.Vmess
+	17, // 10: service.Proxy.vless:type_name -> service.Vless
+	18, // 11: service.Proxy.trojan:type_name -> service.Trojan
+	19, // 12: service.Proxy.shadowsocks:type_name -> service.Shadowsocks
+	20, // 13: service.Proxy.wireguard:type_name -> service.Wireguard
+	21, // 14: service.Proxy.hysteria:type_name -> service.Hysteria
+	22, // 15: service.Proxy.openvpn:type_name -> service.Openvpn
+	23, // 16: service.Proxy.ikev2:type_name -> service.Ikev2
+	24, // 17: service.User.proxies:type_name -> service.Proxy
+	25, // 18: service.Users.users:type_name -> service.User
+	25, // 19: service.UsersChunk.users:type_name -> service.User
+	4,  // 20: service.NodeService.Start:input_type -> service.Backend
+	2,  // 21: service.NodeService.Stop:input_type -> service.Empty
+	2,  // 22: service.NodeService.GetBaseInfo:input_type -> service.Empty
+	2,  // 23: service.NodeService.GetLogs:input_type -> service.Empty
+	2,  // 24: service.NodeService.GetSystemStats:input_type -> service.Empty
+	2,  // 25: service.NodeService.GetBackendStats:input_type -> service.Empty
+	8,  // 26: service.NodeService.GetStats:input_type -> service.StatRequest
+	12, // 27: service.NodeService.GetOutboundsLatency:input_type -> service.LatencyRequest
+	8,  // 28: service.NodeService.GetUserOnlineStats:input_type -> service.StatRequest
+	8,  // 29: service.NodeService.GetUserOnlineIpListStats:input_type -> service.StatRequest
+	25, // 30: service.NodeService.SyncUser:input_type -> service.User
+	26, // 31: service.NodeService.SyncUsers:input_type -> service.Users
+	27, // 32: service.NodeService.SyncUsersChunked:input_type -> service.UsersChunk
+	3,  // 33: service.NodeService.Start:output_type -> service.BaseInfoResponse
+	2,  // 34: service.NodeService.Stop:output_type -> service.Empty
+	3,  // 35: service.NodeService.GetBaseInfo:output_type -> service.BaseInfoResponse
+	5,  // 36: service.NodeService.GetLogs:output_type -> service.Log
+	15, // 37: service.NodeService.GetSystemStats:output_type -> service.SystemStatsResponse
+	14, // 38: service.NodeService.GetBackendStats:output_type -> service.BackendStatsResponse
+	7,  // 39: service.NodeService.GetStats:output_type -> service.StatResponse
+	13, // 40: service.NodeService.GetOutboundsLatency:output_type -> service.LatencyResponse
+	9,  // 41: service.NodeService.GetUserOnlineStats:output_type -> service.OnlineStatResponse
+	10, // 42: service.NodeService.GetUserOnlineIpListStats:output_type -> service.StatsOnlineIpListResponse
+	2,  // 43: service.NodeService.SyncUser:output_type -> service.Empty
+	2,  // 44: service.NodeService.SyncUsers:output_type -> service.Empty
+	2,  // 45: service.NodeService.SyncUsersChunked:output_type -> service.Empty
+	33, // [33:46] is the sub-list for method output_type
+	20, // [20:33] is the sub-list for method input_type
+	20, // [20:20] is the sub-list for extension type_name
+	20, // [20:20] is the sub-list for extension extendee
+	0,  // [0:20] is the sub-list for field type_name
 }
 
 func init() { file_common_service_proto_init() }
@@ -1961,7 +1977,7 @@ func file_common_service_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_common_service_proto_rawDesc), len(file_common_service_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   28,
+			NumMessages:   29,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
