@@ -1,8 +1,11 @@
 name: Build and Push Docker Image (All Branches)
 
+# Upstream's workflow: pushes to the `pasarguard/*` Docker Hub repo, whose
+# secrets this fork doesn't have, so it failed on every single push and buried
+# the signal from the workflow we actually use (docker-ghcr.yml). Manual-only
+# here — re-enable the push trigger if this fork ever gets Docker Hub creds.
 on:
-  push:
-    branches: ['*']
+  workflow_dispatch:
 
 env:
   REGISTRY: ghcr.io

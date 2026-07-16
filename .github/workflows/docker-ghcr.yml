@@ -3,6 +3,11 @@ name: Build and push node image (GHCR)
 # Builds the multi-backend node image and pushes it to this fork's GitHub
 # Container Registry so `docker compose up` can pull it — no Docker Hub secrets
 # needed, only the built-in GITHUB_TOKEN.
+#
+# Deliberately plain: the image name/tags are computed with shell instead of
+# docker/metadata-action (which was failing here and skipping the build, so a
+# fixed image never shipped), and we build linux/amd64 only — every node runs
+# on x86 and the emulated arm64 leg tripled build time for nothing.
 on:
   push:
     branches: [main]
@@ -18,10 +23,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Compute lowercase image name
-        run: echo "IMAGE=ghcr.io/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"
+      - name: Compute image name and tags
+        id: img
+        run: |
+          set -eux
+          image="ghcr.io/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')"
+          tags="${image}:latest,${image}:${GITHUB_SHA::7}"
+          if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            tags="${tags},${image}:${GITHUB_REF_NAME}"
+          fi
+          echo "image=${image}" >> "$GITHUB_OUTPUT"
+          echo "tags=${tags}"   >> "$GITHUB_OUTPUT"
 
-      - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
 
       - name: Log in to GHCR
@@ -31,23 +44,19 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ env.IMAGE }}
-          tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=ref,event=tag
-
       - name: Build and push
         uses: docker/build-push-action@v6
         with:
           context: .
           file: ./Dockerfile
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/amd64
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          tags: ${{ steps.img.outputs.tags }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Summary
+        run: echo "Pushed ${{ steps.img.outputs.tags }}" >> "$GITHUB_STEP_SUMMARY"
