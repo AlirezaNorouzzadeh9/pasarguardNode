@@ -34,12 +34,19 @@ RUN printf '#!/bin/sh\nexit 101\n' > /usr/sbin/policy-rc.d && chmod +x /usr/sbin
       openvpn strongswan strongswan-swanctl \
       libcharon-extra-plugins libcharon-extauth-plugins \
       libstrongswan-standard-plugins libstrongswan-extra-plugins \
-      wireguard-tools iptables iproute2 kmod openssl curl ca-certificates procps && \
+      wireguard-tools iptables nftables iproute2 kmod openssl curl ca-certificates procps && \
     rm -rf /var/lib/apt/lists/* /usr/sbin/policy-rc.d
 
-# Fail the build if the plugins charon needs for EAP-MSCHAPv2 are missing, so a
-# broken image can never ship again.
+# Fail the build if anything a backend shells out to at runtime is missing, so a
+# broken image can never ship again. Each of these has already bitten us:
+#   nft   - wireguard's host routing masquerades via nftables; without it the
+#           tunnel handshakes but gets no egress (openvpn/ikev2 use iptables and
+#           kept working, which made it look like a wireguard-only problem).
+#   plugins - EAP-MSCHAPv2 needs openssl for MD4/DES, else every IKEv2 auth fails.
 RUN set -eux; \
+    for b in nft iptables wg openvpn swanctl ip; do \
+      command -v "$b" >/dev/null || { echo "MISSING binary: $b" >&2; exit 1; }; \
+    done; \
     plugins="$(ls /usr/lib/ipsec/plugins/ 2>/dev/null || true)"; \
     echo "$plugins"; \
     for p in openssl eap-mschapv2; do \
