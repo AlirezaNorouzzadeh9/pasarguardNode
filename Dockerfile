@@ -22,11 +22,29 @@ FROM debian:bookworm-slim
 LABEL org.opencontainers.image.source="https://github.com/AlirezaNorouzzadeh9/pasarguardNode"
 
 # Don't let package postinst scripts try to start services during the build.
+#
+# NOTE: the strongswan crypto plugins are only *Recommends* of the strongswan
+# package, so --no-install-recommends silently drops them and charon comes up
+# with "plugin 'openssl': failed to load - no plugin file available". EAP-MSCHAPv2
+# then fails for every user ("User authentication failed") no matter the password,
+# because it can't compute the MD4/DES response. Pull the plugin packages in
+# explicitly so IKEv2 actually works.
 RUN printf '#!/bin/sh\nexit 101\n' > /usr/sbin/policy-rc.d && chmod +x /usr/sbin/policy-rc.d && \
     apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
-      openvpn strongswan strongswan-swanctl libcharon-extra-plugins \
+      openvpn strongswan strongswan-swanctl \
+      libcharon-extra-plugins libcharon-extauth-plugins \
+      libstrongswan-standard-plugins libstrongswan-extra-plugins \
       wireguard-tools iptables iproute2 kmod openssl curl ca-certificates procps && \
     rm -rf /var/lib/apt/lists/* /usr/sbin/policy-rc.d
+
+# Fail the build if the plugins charon needs for EAP-MSCHAPv2 are missing, so a
+# broken image can never ship again.
+RUN set -eux; \
+    plugins="$(ls /usr/lib/ipsec/plugins/ 2>/dev/null || true)"; \
+    echo "$plugins"; \
+    for p in openssl eap-mschapv2; do \
+      echo "$plugins" | grep -q -- "$p" || { echo "MISSING strongswan plugin: $p" >&2; exit 1; }; \
+    done
 
 ENV SERVICE_PROTOCOL=grpc \
     NODE_HOST=0.0.0.0 \
