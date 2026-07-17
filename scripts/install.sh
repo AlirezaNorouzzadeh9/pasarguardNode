@@ -33,6 +33,7 @@ SERVICE_PORT="${SERVICE_PORT:-62050}"
 API_KEY=""                                    # empty -> auto-generate
 BUILD_FROM_SOURCE=0                           # 1 -> compose builds the image locally
 ASSUME_YES=0
+QUIET="${QUIET:-0}"                           # 1 -> hide docker pull/build output
 
 # Which backends run here (image ships all; off -> PG_NODE_DISABLE_*).
 XRAY_ON=1; OVPN_ON=1; WG_ON=1; IKEV2_ON=1
@@ -54,7 +55,10 @@ has()  { command -v "$1" >/dev/null 2>&1; }
 # Read that works under `curl … | bash` too.
 _read() { if [ -e /dev/tty ]; then read "$@" </dev/tty || true; else read "$@" || true; fi; }
 
-# Quiet step with colored progress; output goes to the log file.
+# Quiet step with colored progress; output goes to the log file. Use this only
+# for steps that finish instantly — anything that can take minutes should use
+# run_step_live so the user can see it working instead of staring at a frozen
+# line and assuming it hung.
 STEP_LOG="/tmp/pg-node-docker.log"
 run_step() {
   local msg="$1"; shift
@@ -65,6 +69,39 @@ run_step() {
     echo -e "${c_red}failed${c_off}"
     err "step failed: ${msg}"; err "last lines of ${STEP_LOG}:"; tail -n 12 "$STEP_LOG" >&2 || true
     exit 1
+  fi
+}
+
+# Long step whose output the user should watch live (docker pull/build/up:
+# layer downloads, build steps). Streams to the terminal AND the log file.
+# QUIET=1 falls back to the silent behaviour.
+run_step_live() {
+  local msg="$1"; shift
+  if [ "${QUIET:-0}" = "1" ]; then run_step "$msg" "$@"; return; fi
+  echo -e "  ${c_cyn}▶${c_off} ${c_bld}${msg}${c_off}"
+  echo -e "${c_dim}    ┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄${c_off}"
+  # pipefail (set at the top) makes the pipeline fail if the command fails.
+  if "$@" 2>&1 | tee -a "$STEP_LOG" | sed "s/^/    /"; then
+    echo -e "${c_dim}    ┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄${c_off}"
+    echo -e "  ${c_grn}✔${c_off} ${msg}"
+  else
+    echo -e "${c_dim}    ┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄${c_off}"
+    echo -e "  ${c_red}✘${c_off} ${msg}"
+    err "step failed: ${msg} (full log: ${STEP_LOG})"
+    exit 1
+  fi
+}
+
+# run_step_live variant that returns non-zero instead of exiting.
+run_step_live_soft() {
+  local msg="$1"; shift
+  if [ "${QUIET:-0}" = "1" ]; then run_step_soft "$msg" "$@"; return; fi
+  echo -e "  ${c_cyn}▶${c_off} ${c_bld}${msg}${c_off}"
+  echo -e "${c_dim}    ┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄${c_off}"
+  if "$@" 2>&1 | tee -a "$STEP_LOG" | sed "s/^/    /"; then
+    echo -e "  ${c_grn}✔${c_off} ${msg}"; return 0
+  else
+    echo -e "  ${c_yel}▷${c_off} ${msg} — ${c_yel}skipped${c_off}"; return 1
   fi
 }
 
@@ -137,7 +174,11 @@ Install options (skip the menu with -y):
   --build               build the image from source instead of pulling
   --branch <name> | --repo <url>
   -y, --yes             non-interactive
+  -q, --quiet           hide docker pull/build output (default: show it live)
   -h, --help
+
+Docker pull/build/up stream their output so you can watch progress; the full
+log is always kept at ${STEP_LOG}.
 EOF
 }
 
@@ -158,6 +199,7 @@ parse_install_args() {
       --branch) BRANCH="$2"; shift 2 ;;
       --repo) REPO="$2"; shift 2 ;;
       -y|--yes) ASSUME_YES=1; shift ;;
+      -q|--quiet) QUIET=1; shift ;;
       -h|--help) usage; exit 0 ;;
       *) die "unknown option: $1 (see --help)" ;;
     esac
@@ -310,16 +352,17 @@ run_install() {
   require_root
   : > "$STEP_LOG"
   [ -z "$API_KEY" ] && API_KEY="$(gen_uuid)"
-  echo -e "${c_bld}Installing${c_off} ${c_dim}(details hidden — full log: ${STEP_LOG})${c_off}"
-  run_step "Installing Docker"            install_docker
-  run_step "Writing docker-compose.yml"   write_compose
+  echo -e "${c_bld}Installing${c_off} ${c_dim}(full log: ${STEP_LOG}${QUIET:+ — quiet mode})${c_off}"
+  run_step_live "Installing Docker"          install_docker
+  run_step      "Writing docker-compose.yml" write_compose
   if [ "$BUILD_FROM_SOURCE" = 0 ]; then
-    if ! run_step_soft "Pulling image ${IMAGE}" pull_image; then
-      warn "image pull failed — falling back to building from source"
-      BUILD_FROM_SOURCE=1; write_compose
+    if ! run_step_live_soft "Pulling image ${IMAGE}" pull_image; then
+      warn "image pull failed — falling back to building from source (this takes a few minutes)"
+      BUILD_FROM_SOURCE=1
+      run_step "Rewriting docker-compose.yml" write_compose
     fi
   fi
-  run_step "Starting container"           compose_up
+  run_step_live "Starting container"         compose_up
   print_summary
 }
 
@@ -343,11 +386,11 @@ update_command() {
   : > "$STEP_LOG"
   echo -e "${c_bld}Updating${c_off}"
   if grep -q "build:" "$COMPOSE_FILE"; then
-    run_step "Rebuilding image" bash -c "cd '$INSTALL_DIR' && $COMPOSE_CMD build --pull"
+    run_step_live "Rebuilding image" bash -c "cd '$INSTALL_DIR' && $COMPOSE_CMD build --pull"
   else
-    run_step "Pulling latest image" pull_image
+    run_step_live "Pulling latest image" pull_image
   fi
-  run_step "Recreating container" bash -c "cd '$INSTALL_DIR' && $COMPOSE_CMD up -d"
+  run_step_live "Recreating container" bash -c "cd '$INSTALL_DIR' && $COMPOSE_CMD up -d"
   log "Updated ($(docker inspect -f '{{.State.Status}}' "$SERVICE" 2>/dev/null))"
 }
 
