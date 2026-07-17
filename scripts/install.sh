@@ -145,8 +145,47 @@ detect_compose() {
 }
 dc() { ( cd "$INSTALL_DIR" && $COMPOSE_CMD "$@" ); }
 
+# Fresh VPS images kick off unattended-upgrades / apt-daily on first boot, which
+# holds the dpkg lock for the first few minutes. get.docker.com then dies with
+#   E: Could not get lock /var/lib/dpkg/lock-frontend. It is held by process N
+# Wait it out instead of failing the install on a brand new server.
+apt_busy() {
+  local f
+  for f in /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock \
+           /var/lib/apt/lists/lock /var/cache/apt/archives/lock; do
+    [ -e "$f" ] || continue
+    if has fuser && fuser "$f" >/dev/null 2>&1; then return 0; fi
+  done
+  # fuser isn't always installed; fall back to spotting the processes themselves.
+  if has pgrep; then
+    local p
+    for p in apt apt-get dpkg; do
+      pgrep -x "$p" >/dev/null 2>&1 && return 0
+    done
+    pgrep -f unattended-upgr >/dev/null 2>&1 && return 0
+  fi
+  return 1
+}
+
+wait_for_apt() {
+  has apt-get || return 0            # not a debian-family box; nothing to wait on
+  apt_busy || return 0               # already free — don't print anything
+  local waited=0 max="${APT_LOCK_TIMEOUT:-300}"
+  log "another apt/dpkg process is running (unattended-upgrades on a fresh VPS) — waiting up to ${max}s..."
+  while apt_busy; do
+    if [ "$waited" -ge "$max" ]; then
+      warn "apt is still locked after ${max}s."
+      warn "Wait for it to finish (or: systemctl stop unattended-upgrades) and re-run."
+      return 1
+    fi
+    sleep 3; waited=$((waited + 3))
+  done
+  log "apt is free (waited ${waited}s) — continuing"
+}
+
 install_docker() {
   if ! has docker; then
+    wait_for_apt || die "apt is locked by another process — see above"
     curl -fsSL https://get.docker.com | sh
     systemctl enable --now docker 2>/dev/null || true
   fi
@@ -352,7 +391,9 @@ run_install() {
   require_root
   : > "$STEP_LOG"
   [ -z "$API_KEY" ] && API_KEY="$(gen_uuid)"
-  echo -e "${c_bld}Installing${c_off} ${c_dim}(full log: ${STEP_LOG}${QUIET:+ — quiet mode})${c_off}"
+  # ${QUIET:+…} would fire on the literal "0" too, so test the value.
+  local quiet_note=""; [ "${QUIET:-0}" = "1" ] && quiet_note=" — quiet mode"
+  echo -e "${c_bld}Installing${c_off} ${c_dim}(full log: ${STEP_LOG}${quiet_note})${c_off}"
   run_step_live "Installing Docker"          install_docker
   run_step      "Writing docker-compose.yml" write_compose
   if [ "$BUILD_FROM_SOURCE" = 0 ]; then
