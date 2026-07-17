@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -270,8 +271,10 @@ func (o *IKEv2) SyncUser(ctx context.Context, user *common.User) error {
 }
 
 func (o *IKEv2) SyncUsers(ctx context.Context, users []*common.User) error {
-	o.users.replaceAll(users)
-	return o.reload()
+	removed := o.users.replaceAll(users)
+	err := o.reload()
+	o.revokeUsers(removed)
+	return err
 }
 
 func (o *IKEv2) UpdateUsers(ctx context.Context, users []*common.User) error {
@@ -284,10 +287,77 @@ func (o *IKEv2) UpdateUsersAndRestart(ctx context.Context, users []*common.User)
 }
 
 func (o *IKEv2) applyUsers(users []*common.User) error {
+	var removed []string
 	for _, u := range users {
-		o.users.applyUser(u)
+		username, _, wasRemoved := o.users.applyUser(u)
+		if wasRemoved && username != "" {
+			removed = append(removed, username)
+		}
 	}
-	return o.reload()
+	err := o.reload()
+	o.revokeUsers(removed)
+	return err
+}
+
+// eapSecretID is the unique name swanctl knows a user's EAP secret by. It must
+// match the section name writeSwanctl emits ("eap-<username>"), because that is
+// what --load-creds registers the secret under and therefore what unload-shared
+// needs to remove it again.
+func eapSecretID(username string) string { return "eap-" + username }
+
+// revokeUsers cuts off users that are no longer authorized (expired, limited,
+// disabled, deleted).
+//
+// Rewriting swanctl.conf and reloading is NOT enough on its own:
+//
+//   - An established IKE SA rekeys without re-running EAP, so a user whose
+//     credential is gone keeps their tunnel — and keeps burning traffic — until
+//     they disconnect by themselves or charon restarts. The config says they're
+//     gone while the packets keep flowing.
+//   - `swanctl --load-all` has no --clear, so a stale EAP secret can survive the
+//     reload and let a revoked user authenticate all over again.
+//
+// So terminate their live SAs and unload the secret explicitly. Both are
+// best-effort: a failure here must not fail the sync, since the config is
+// already correct and the next poll will retry.
+func (o *IKEv2) revokeUsers(usernames []string) {
+	if len(usernames) == 0 || o.vici == nil {
+		return
+	}
+
+	gone := make(map[string]struct{}, len(usernames))
+	for _, u := range usernames {
+		if u != "" {
+			gone[u] = struct{}{}
+		}
+	}
+	if len(gone) == 0 {
+		return
+	}
+
+	// Drop the credential so the user can't simply authenticate again.
+	for username := range gone {
+		if err := o.vici.unloadShared(eapSecretID(username)); err != nil {
+			log.Printf("ikev2: unloading EAP secret for %q failed: %v", username, err)
+		}
+	}
+
+	// Tear down whatever they still have open.
+	sas, err := o.vici.listSAs()
+	if err != nil {
+		log.Printf("ikev2: listing SAs to revoke %v failed: %v", usernames, err)
+		return
+	}
+	for _, sa := range sas {
+		if _, ok := gone[sa.Identity]; !ok {
+			continue
+		}
+		if err := o.vici.terminateIKE(sa.IKEID); err != nil {
+			log.Printf("ikev2: terminating SA %d for revoked user %q failed: %v", sa.IKEID, sa.Identity, err)
+			continue
+		}
+		o.emitLogf("Info", "ikev2: user %s revoked, terminated SA %d from %s", sa.Identity, sa.IKEID, sa.Remote)
+	}
 }
 
 func (o *IKEv2) GetOutboundsLatency(ctx context.Context, request *common.LatencyRequest) (*common.LatencyResponse, error) {

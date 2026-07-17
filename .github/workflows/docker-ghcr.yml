@@ -43,8 +43,8 @@ jobs:
           go-version-file: go.mod
           cache: false
 
-      - name: Test host routing
-        run: go test ./backend/hostroute/... -v
+      - name: Test host routing + ikev2 revocation
+        run: go test ./backend/hostroute/... ./backend/ikev2/... -v
 
       - uses: docker/setup-buildx-action@v3
 
