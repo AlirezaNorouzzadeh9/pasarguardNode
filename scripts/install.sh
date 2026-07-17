@@ -74,22 +74,34 @@ run_step() {
 
 _rule() { echo -e "${c_dim}    ┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄${c_off}"; }
 
-# Runs "$@" with its output streamed to the terminal and appended to the log,
-# and returns its exit status.
+# Runs "$@" with its output visible, and returns its exit status.
 #
-# It deliberately does NOT pipe ("$@" | tee): a pipeline runs the command in a
-# subshell, so anything it sets is lost — install_docker calls detect_compose to
-# set COMPOSE_CMD, and losing that left $COMPOSE_CMD empty and the next step
-# running a bare `pull`/`up` ("pull: command not found"). Redirecting to a
-# process substitution keeps the command in this shell. The fd is closed and the
-# reader reaped before returning, so its output can't land after the result line.
+# Two traps this avoids, both learned the hard way:
+#
+#  1. Never pipe ("$@" | tee): a pipeline runs the command in a subshell, so
+#     anything it sets is lost. install_docker calls detect_compose to set
+#     COMPOSE_CMD; losing that left it empty and the next step ran a bare
+#     `pull`/`up` ("pull: command not found"). Both branches below keep the
+#     command in this shell.
+#
+#  2. Docker only draws its progress in place when it owns a TTY. Hand it
+#     anything else — a pipe, a process substitution — and it switches to plain
+#     mode, printing one line per tick and burying the screen under thousands of
+#     "Extracting 1B" lines. So when there's a terminal, give it to the command
+#     and let it render the way people expect; the user is watching it anyway.
+#     Without a terminal (CI, `| tee`, nohup) capture through the log instead.
 _stream() {
   local fd rc
-  exec {fd}> >(tee -a "$STEP_LOG" | sed "s/^/    /")
-  "$@" >&"$fd" 2>&1
-  rc=$?
-  exec {fd}>&-
-  wait 2>/dev/null || true
+  if [ -t 1 ]; then
+    "$@"
+    rc=$?
+  else
+    exec {fd}> >(tee -a "$STEP_LOG" | sed "s/^/    /")
+    "$@" >&"$fd" 2>&1
+    rc=$?
+    exec {fd}>&-
+    wait 2>/dev/null || true   # reap, so output can't land after the result line
+  fi
   return $rc
 }
 
