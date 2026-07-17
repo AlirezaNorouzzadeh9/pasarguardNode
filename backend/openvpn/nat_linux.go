@@ -8,6 +8,8 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+
+	"github.com/pasarguard/node/backend/hostroute"
 )
 
 const (
@@ -50,11 +52,28 @@ func applyHostRouting(serverSubnet string) func() {
 		}
 	}
 
+	// Masquerade alone is not enough: Docker sets the FORWARD policy to drop, so
+	// without an explicit accept the client's packets die in FORWARD before ever
+	// reaching POSTROUTING — the tunnel connects and no traffic passes.
+	owner := forwardOwnerID(serverSubnet)
+	if rules, err := hostroute.EnsureForwardAcceptForSubnet(serverSubnet, owner); err != nil {
+		log.Printf("openvpn host routing: forward accept rules failed: %v", err)
+	} else if len(rules) > 0 {
+		log.Printf("openvpn host routing: forward accept for %s in %v (owner %q)", serverSubnet, rules, owner)
+	}
+
 	return func() {
 		if err := masq("-D"); err != nil {
 			log.Printf("openvpn host routing: iptables cleanup failed: %v", err)
 		}
+		if err := hostroute.RemoveForwardRules(owner); err != nil {
+			log.Printf("openvpn host routing: forward cleanup failed: %v", err)
+		}
 	}
+}
+
+func forwardOwnerID(subnet string) string {
+	return "openvpn_" + strings.NewReplacer("/", "_", ".", "_", ":", "_").Replace(subnet)
 }
 
 func ensureIPv4Forwarding() error {

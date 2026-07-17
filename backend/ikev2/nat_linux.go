@@ -8,6 +8,8 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+
+	"github.com/pasarguard/node/backend/hostroute"
 )
 
 const (
@@ -47,11 +49,29 @@ func applyHostRouting(pool string) func() {
 			log.Printf("ikev2 host routing: iptables masquerade failed: %v", err)
 		}
 	}
+
+	// Masquerade alone is not enough: Docker sets the FORWARD policy to drop, so
+	// without an explicit accept the client's packets die in FORWARD before ever
+	// reaching POSTROUTING — the tunnel connects and no traffic passes.
+	owner := forwardOwnerID(pool)
+	if rules, err := hostroute.EnsureForwardAcceptForSubnet(pool, owner); err != nil {
+		log.Printf("ikev2 host routing: forward accept rules failed: %v", err)
+	} else if len(rules) > 0 {
+		log.Printf("ikev2 host routing: forward accept for %s in %v (owner %q)", pool, rules, owner)
+	}
+
 	return func() {
 		if err := masq("-D"); err != nil {
 			log.Printf("ikev2 host routing: iptables cleanup failed: %v", err)
 		}
+		if err := hostroute.RemoveForwardRules(owner); err != nil {
+			log.Printf("ikev2 host routing: forward cleanup failed: %v", err)
+		}
 	}
+}
+
+func forwardOwnerID(pool string) string {
+	return "ikev2_" + strings.NewReplacer("/", "_", ".", "_", ":", "_").Replace(pool)
 }
 
 func ensureIPv4Forwarding() error {
