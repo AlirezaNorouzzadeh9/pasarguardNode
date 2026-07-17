@@ -72,21 +72,38 @@ run_step() {
   fi
 }
 
-# Long step whose output the user should watch live (docker pull/build/up:
-# layer downloads, build steps). Streams to the terminal AND the log file.
-# QUIET=1 falls back to the silent behaviour.
+_rule() { echo -e "${c_dim}    ┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄${c_off}"; }
+
+# Runs "$@" with its output streamed to the terminal and appended to the log,
+# and returns its exit status.
+#
+# It deliberately does NOT pipe ("$@" | tee): a pipeline runs the command in a
+# subshell, so anything it sets is lost — install_docker calls detect_compose to
+# set COMPOSE_CMD, and losing that left $COMPOSE_CMD empty and the next step
+# running a bare `pull`/`up` ("pull: command not found"). Redirecting to a
+# process substitution keeps the command in this shell. The fd is closed and the
+# reader reaped before returning, so its output can't land after the result line.
+_stream() {
+  local fd rc
+  exec {fd}> >(tee -a "$STEP_LOG" | sed "s/^/    /")
+  "$@" >&"$fd" 2>&1
+  rc=$?
+  exec {fd}>&-
+  wait 2>/dev/null || true
+  return $rc
+}
+
+# Long step whose output the user should watch live (docker pull/build/up: layer
+# downloads, build steps). QUIET=1 falls back to the silent behaviour.
 run_step_live() {
   local msg="$1"; shift
   if [ "${QUIET:-0}" = "1" ]; then run_step "$msg" "$@"; return; fi
   echo -e "  ${c_cyn}▶${c_off} ${c_bld}${msg}${c_off}"
-  echo -e "${c_dim}    ┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄${c_off}"
-  # pipefail (set at the top) makes the pipeline fail if the command fails.
-  if "$@" 2>&1 | tee -a "$STEP_LOG" | sed "s/^/    /"; then
-    echo -e "${c_dim}    ┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄${c_off}"
-    echo -e "  ${c_grn}✔${c_off} ${msg}"
+  _rule
+  if _stream "$@"; then
+    _rule; echo -e "  ${c_grn}✔${c_off} ${msg}"
   else
-    echo -e "${c_dim}    ┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄${c_off}"
-    echo -e "  ${c_red}✘${c_off} ${msg}"
+    _rule; echo -e "  ${c_red}✘${c_off} ${msg}"
     err "step failed: ${msg} (full log: ${STEP_LOG})"
     exit 1
   fi
@@ -97,8 +114,8 @@ run_step_live_soft() {
   local msg="$1"; shift
   if [ "${QUIET:-0}" = "1" ]; then run_step_soft "$msg" "$@"; return; fi
   echo -e "  ${c_cyn}▶${c_off} ${c_bld}${msg}${c_off}"
-  echo -e "${c_dim}    ┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄${c_off}"
-  if "$@" 2>&1 | tee -a "$STEP_LOG" | sed "s/^/    /"; then
+  _rule
+  if _stream "$@"; then
     echo -e "  ${c_grn}✔${c_off} ${msg}"; return 0
   else
     echo -e "  ${c_yel}▷${c_off} ${msg} — ${c_yel}skipped${c_off}"; return 1
