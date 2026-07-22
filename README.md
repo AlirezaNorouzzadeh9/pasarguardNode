@@ -1,94 +1,94 @@
-# PasarGuard-Node
-<p align="center">
-    <a href="#">
-        <img src="https://img.shields.io/github/actions/workflow/status/PasarGuard/node/docker-build.yml?style=flat-square" />
-    </a>
-    <a href="https://hub.docker.com/r/pasarguard/node" target="_blank">
-        <img src="https://img.shields.io/docker/pulls/pasarguard/node?style=flat-square&logo=docker" />
-    </a>
-    <a href="#">
-        <img src="https://img.shields.io/github/license/PasarGuard/node?style=flat-square" />
-    </a>
-    <a href="#">
-        <img src="https://img.shields.io/github/stars/PasarGuard/node?style=social" />
-    </a>
-</p>
+# PasarGuard Node — Multi-Backend
 
-# Documentation
-You can find a full guide in docs https://docs.pasarguard.org/en/node/
+One node, four VPN backends in a single Docker image, all driven by the panel:
 
-# One-Click Installation (Recommended)
-The bundled installer runs this (multi-backend) node **as a Docker container**:
-it installs Docker if missing, lets you toggle which backends run here, writes a
-`docker-compose.yml` (pulling this fork's prebuilt image — all backends baked
-in), brings the container up, and prints the Server CA + details to register the
-node in the panel. No building on the node.
+| Backend | Protocols | Notes |
+| --- | --- | --- |
+| **Xray** | VLESS / VMESS / Trojan / Shadowsocks | full xray-core |
+| **OpenVPN** | OpenVPN (udp/tcp) | `.ovpn` per user, served by the panel |
+| **WireGuard** | WireGuard | `.conf` + QR per user |
+| **IKEv2 / IPsec** | strongSwan (EAP-MSCHAPv2) | built-in client on iOS / Windows — no app |
+
+The panel assigns cores to the node over gRPC; the node starts/stops the
+matching backends, enforces per-user IP limits on all of them, and reports
+per-protocol traffic and online IPs back to the panel.
+
+> **Private repo:** the source is private, but the container image on GHCR is
+> public — servers can pull and run it without any GitHub credentials. Only
+> fetching the scripts/source needs auth (see below).
+
+## Install (Docker, recommended)
+
+The installer runs the node as a Docker container: installs Docker if missing,
+lets you toggle which backends run on this box, writes a `docker-compose.yml`
+(pulling the prebuilt image — all backends baked in), brings it up, and prints
+the **Server CA** + details to register the node in the panel.
+
+Get `install.sh` onto the server first — pick one:
+
+```bash
+# a) from your machine (repo cloned locally)
+scp scripts/install.sh root@SERVER:/root/ && ssh root@SERVER
+
+# b) straight from GitHub with a personal access token (repo scope, read)
+curl -fsSL -H "Authorization: token YOUR_PAT" \
+  https://raw.githubusercontent.com/AlirezaNorouzzadeh9/pasarguardNode/main/scripts/install.sh -o install.sh
+```
+
+Then on the server:
 
 ```bash
 # interactive menu (toggle backends, set node port + API key, install)
-sudo bash -c "$(curl -sL https://github.com/AlirezaNorouzzadeh9/pasarguardNode/raw/main/scripts/install.sh)"
+sudo bash install.sh
 ```
 
-Non-interactive, e.g. an xray + wireguard node (OpenVPN/IKEv2 disabled) with your
-own API key:
+Non-interactive, e.g. an xray + wireguard node (OpenVPN/IKEv2 disabled) with
+your own API key:
 
 ```bash
-sudo bash -c "$(curl -sL https://github.com/AlirezaNorouzzadeh9/pasarguardNode/raw/main/scripts/install.sh)" @ install \
-  --disable openvpn,ikev2 --api-key <uuid> --service-port 62050 --yes
+sudo bash install.sh install --disable openvpn,ikev2 \
+  --api-key <uuid> --service-port 62050 --yes
 ```
 
-Command-driven management (all via `docker compose` under the hood):
+Day-2 management (all via `docker compose` under the hood):
 
 ```bash
-sudo bash install.sh update      # pull the latest image (or rebuild) + recreate
+sudo bash install.sh update      # pull the latest image + recreate
 sudo bash install.sh restart | status | logs
 sudo bash install.sh uninstall
 ```
 
-The interactive menu toggles the four **backends** (image ships all — off means
-`PG_NODE_DISABLE_*`), and sets the **node (gRPC) port**, the **API key** (blank =
-auto), and the **image source** (pull vs build from source). **VPN ports**
-(OpenVPN / WireGuard) live in the panel's core config; IKEv2 is always 500/4500.
-
 Install options (skip the menu with `-y`): `--disable <list>`, `--api-key <uuid>`,
 `--service-port <n>`, `--image <ref>`, `--build`, `--branch <name>`, `--repo <url>`.
-See [`scripts/install.sh`](scripts/install.sh).
+See [`scripts/install.sh`](scripts/install.sh). `--build` clones this repo on the
+server, so it needs a PAT (pass `--repo https://TOKEN@github.com/...`); the
+default pull mode needs nothing.
 
-> If the GHCR image can't be pulled (still private), the installer falls back to
-> building it from source; or make the package public. Open the VPN ports on any
-> **cloud** firewall too — host networking binds them on the host directly.
-
-# Docker (compose)
-
-Prefer Docker? A prebuilt multi-backend image is published to this fork's GHCR,
-so you just drop a compose file and bring it up — no building on the node.
+## Docker compose (manual)
 
 ```bash
 mkdir -p /opt/pg-node && cd /opt/pg-node
-curl -fsSL https://github.com/AlirezaNorouzzadeh9/pasarguardNode/raw/main/docker-compose.yml -o docker-compose.yml
-# set API_KEY to any UUID (the same one you enter for this node in the panel)
+# copy docker-compose.yml from this repo (scp / PAT, same as above)
 sed -i "s/REPLACE-WITH-A-UUID/$(cat /proc/sys/kernel/random/uuid)/" docker-compose.yml
 docker compose up -d
 cat /var/lib/pg-node/certs/ssl_cert.pem   # the Server CA to paste into the panel
 ```
 
-The image bundles xray, OpenVPN, WireGuard and strongSwan/charon (IKEv2). The
-container runs with `network_mode: host` and `cap_add: [NET_ADMIN, SYS_MODULE]`
-plus `/dev/net/tun` and `/lib/modules` so all four backends work; the entrypoint
-generates the node TLS certificate on first run and prints the **Server CA** to
-paste into the panel. Data (certs + generated configs) lives in
+The container runs with `network_mode: host` and `cap_add: [NET_ADMIN,
+SYS_MODULE]` plus `/dev/net/tun` and `/lib/modules` so all four backends work.
+The entrypoint generates the node TLS certificate on first run and prints the
+**Server CA** to paste into the panel. Data (certs + generated configs) lives in
 `/var/lib/pg-node`.
 
-> Still open the VPN ports on any **cloud** firewall (host networking binds them
-> on the host directly).
+> Open the VPN ports on any **cloud** firewall too — host networking binds them
+> on the host directly. OpenVPN/WireGuard ports are set in the panel's core
+> config; IKEv2 is always UDP 500 + 4500.
 
-### Choosing which backends run
+## Choosing which backends run
 
-The node is panel-driven: it runs whatever cores the panel assigns, and the image
-ships all four backends. **Ports** (OpenVPN, WireGuard) are set in the panel's core
-config / per-node override; **IKEv2** is always UDP 500 + 4500. To run only a
-subset, either just don't assign a core to the node, or hard-disable a backend at
-the node with an env var (it's then also greyed out in the panel):
+The node is panel-driven: it runs whatever cores the panel assigns. To keep a
+backend off a box entirely, hard-disable it with an env var (it's then also
+greyed out in the panel):
 
 | Env | Effect |
 | --- | --- |
@@ -97,26 +97,21 @@ the node with an env var (it's then also greyed out in the panel):
 | `PG_NODE_DISABLE_WIREGUARD=1` | never run WireGuard |
 | `PG_NODE_DISABLE_IKEV2=1` | never run IKEv2 |
 
-# Donation
-You can help PasarGuard team with your donations, [Click Here](https://donate.pasarguard.org/)
+## Development
 
-# Contributors
+```bash
+make build                   # build the node binary
+go test ./...                # run tests
+docker build -t pg-node .    # build the full multi-backend image locally
+```
 
-We ❤️‍🔥 contributors! If you'd like to contribute, please check out our [Contributing Guidelines](CONTRIBUTING.md) and feel free to submit a pull request or open an issue. We also welcome you to join our [Telegram](https://t.me/Pasar_Guard) group for either support or contributing guidance.
+CI (GitHub Actions) builds and pushes the image to GHCR on pushes to `main` and
+`v*` tags (plus manual dispatch), and runs the Go tests. Releases attach
+prebuilt binaries.
 
-Check [open issues](https://github.com/PasarGuard/node/issues) to help the progress of this project.
+## Credits & license
 
-## Stargazers over time
-[![Stargazers over time](https://starchart.cc/PasarGuard/node.svg?variant=adaptive)](https://starchart.cc/PasarGuard/node)
-                    
-<p align="center">
-Thanks to the all contributors who have helped improve PasarGuard Node:
-</p>
-<p align="center">
-<a href="https://github.com/PasarGuard/node/graphs/contributors">
-  <img src="https://contrib.rocks/image?repo=PasarGuard/node" />
-</a>
-</p>
-<p align="center">
-  Made with <a rel="noopener noreferrer" target="_blank" href="https://contrib.rocks">contrib.rocks</a>
-</p>
+Based on [PasarGuard/node](https://github.com/PasarGuard/node), extended with
+multi-backend (OpenVPN / WireGuard / IKEv2) support, IP-limit enforcement on
+every backend, per-protocol stats, and the Docker/installer stack. Licensed
+under the [GPL-3.0](LICENSE).
