@@ -196,18 +196,41 @@ apt_busy() {
   return 1
 }
 
+# Best-effort name of whatever is holding the lock, so the wait isn't a black box.
+apt_holder() {
+  local f p
+  for f in /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock \
+           /var/lib/apt/lists/lock /var/cache/apt/archives/lock; do
+    [ -e "$f" ] || continue
+    has fuser || break
+    p=$(fuser "$f" 2>/dev/null | tr -s ' ' '\n' | grep -E '^[0-9]+$' | head -1)
+    [ -n "$p" ] && { ps -o comm= -p "$p" 2>/dev/null | tail -1; return; }
+  done
+  if has pgrep; then
+    for p in unattended-upgr apt apt-get dpkg; do
+      pgrep -x "$p" >/dev/null 2>&1 && { echo "$p"; return; }
+    done
+  fi
+  echo "another apt/dpkg process"
+}
+
 wait_for_apt() {
   has apt-get || return 0            # not a debian-family box; nothing to wait on
   apt_busy || return 0               # already free — don't print anything
-  local waited=0 max="${APT_LOCK_TIMEOUT:-300}"
-  log "another apt/dpkg process is running (unattended-upgrades on a fresh VPS) — waiting up to ${max}s..."
+  # unattended-upgrades on a brand new VPS routinely runs 5-15 minutes.
+  local waited=0 max="${APT_LOCK_TIMEOUT:-900}"
+  log "apt/dpkg is busy ($(apt_holder)) — normal on a fresh VPS; waiting up to $((max / 60))m..."
   while apt_busy; do
     if [ "$waited" -ge "$max" ]; then
-      warn "apt is still locked after ${max}s."
-      warn "Wait for it to finish (or: systemctl stop unattended-upgrades) and re-run."
+      warn "apt is still locked after $((max / 60))m (holder: $(apt_holder))."
+      warn "Either wait for it to finish and re-run, or:"
+      warn "  APT_LOCK_TIMEOUT=1800 bash install.sh    # wait longer"
+      warn "  systemctl stop unattended-upgrades       # stop the updater, then re-run"
       return 1
     fi
     sleep 3; waited=$((waited + 3))
+    # a heartbeat every 30s so a long wait doesn't look like a hang
+    [ $((waited % 30)) -eq 0 ] && log "  still waiting... ${waited}s elapsed (holder: $(apt_holder))"
   done
   log "apt is free (waited ${waited}s) — continuing"
 }
