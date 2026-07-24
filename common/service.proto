@@ -178,6 +178,12 @@ message User {
     // Maximum simultaneous connections/devices (distinct source IPs) allowed
     // for this user. 0 means unlimited. Enforced per-backend on the node.
     uint32 ip_limit = 4;
+    // Throughput ceiling in kilobits per second, applied separately to each
+    // direction. 0 means unlimited. Enforced on the node with tc, and only for
+    // backends that give each client its own tunnel address (openvpn,
+    // wireguard, ikev2) — xray users share the proxy's own egress, so they
+    // cannot be told apart at the packet level.
+    uint32 speed_limit = 5;
 }
 
 message Users {
