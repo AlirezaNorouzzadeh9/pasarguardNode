@@ -159,6 +159,24 @@ func (c *Controller) StartBackend(ctx context.Context, backendCfg *common.Backen
 		return fmt.Errorf("backend %q is disabled on this node (PG_NODE_DISABLE_*)", backendTypeKey(backendCfg.GetType()))
 	}
 
+	key := backendKey{
+		typ:      backendCfg.GetType(),
+		instance: backendInstanceID(backendCfg.GetType(), backendCfg.GetConfig()),
+	}
+
+	// Retire a previous instance of this exact core *before* launching the new
+	// one. The replacement reuses the same listen port and the same on-disk
+	// state, so letting the two overlap makes the new process fail to bind and
+	// exit — and the old one is torn down straight after, leaving nothing
+	// running. Cores under a different key are untouched and keep serving.
+	c.mu.Lock()
+	old := c.backends[key]
+	delete(c.backends, key)
+	c.mu.Unlock()
+	if old != nil {
+		old.Shutdown()
+	}
+
 	var newBackend backend.Backend
 
 	switch backendCfg.GetType() {
@@ -222,21 +240,9 @@ func (c *Controller) StartBackend(ctx context.Context, backendCfg *common.Backen
 		return errors.New("invalid backend type")
 	}
 
-	key := backendKey{
-		typ:      backendCfg.GetType(),
-		instance: backendInstanceID(backendCfg.GetType(), backendCfg.GetConfig()),
-	}
-
 	c.mu.Lock()
-	old := c.backends[key]
 	c.backends[key] = newBackend
 	c.mu.Unlock()
-
-	// Replace only the same instance; cores of the same type with a different
-	// instance id keep running alongside it.
-	if old != nil {
-		old.Shutdown()
-	}
 
 	return nil
 }
