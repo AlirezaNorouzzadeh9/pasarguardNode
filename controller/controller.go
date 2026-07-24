@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -29,10 +30,22 @@ type Service interface {
 	Disconnect()
 }
 
+// backendKey identifies one running core. Keying by type alone would let a
+// node run only a single instance per protocol, but some setups need more than
+// one — e.g. OpenVPN listening on both UDP and TCP, which OpenVPN itself can
+// only do as two separate servers. The instance part comes from the core config
+// (see backendInstanceID), so the panel can assign several cores of the same
+// type to one node and each gets its own process.
+type backendKey struct {
+	typ      common.BackendType
+	instance string
+}
+
 type Controller struct {
-	// backends holds every core running on this node, keyed by backend type,
-	// so one node can serve e.g. openvpn + ikev2 at the same time.
-	backends    map[common.BackendType]backend.Backend
+	// backends holds every core running on this node, keyed by type+instance,
+	// so one node can serve e.g. openvpn + ikev2 at the same time — and several
+	// openvpn cores side by side.
+	backends    map[backendKey]backend.Backend
 	cfg         *config.Config
 	apiPort     int
 	metricPort  int
@@ -53,7 +66,7 @@ func New(cfg *config.Config) *Controller {
 	_, cancel := context.WithCancel(context.Background())
 	return &Controller{
 		cfg:        cfg,
-		backends:   make(map[common.BackendType]backend.Backend),
+		backends:   make(map[backendKey]backend.Backend),
 		apiPort:    netutil.FindFreePort(),
 		metricPort: netutil.FindFreePort(),
 		cancelFunc: cancel,
@@ -99,7 +112,7 @@ func (c *Controller) Disconnect() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	c.backends = make(map[common.BackendType]backend.Backend)
+	c.backends = make(map[backendKey]backend.Backend)
 	c.apiPort = netutil.FindFreePort()
 	c.metricPort = netutil.FindFreePort()
 	c.clientIP = ""
@@ -117,10 +130,6 @@ func (c *Controller) NewRequest() {
 	c.lastRequest = time.Now()
 }
 
-// StartBackend brings up (or replaces) the backend for a given type and adds it
-// to the node's backend set. Calling it repeatedly with different types lets one
-// node run several cores side by side; calling it again for the same type shuts
-// the old instance down and swaps in the new one.
 // backendDisabled reports whether an operator has turned a backend off on this
 // node via PG_NODE_DISABLE_<TYPE>=1 (regardless of what the panel assigns). Lets
 // a container run a fixed subset of backends like the interactive installer does.
@@ -140,6 +149,11 @@ func backendDisabled(t common.BackendType) bool {
 	return false
 }
 
+// StartBackend brings a core up and adds it to the node's backend set. Cores
+// are tracked per type+instance (see backendKey), so a node can run several
+// cores side by side — different protocols, and also several cores of the same
+// protocol such as OpenVPN on UDP and on TCP. Calling it again for the same
+// instance shuts the old process down and swaps the new one in.
 func (c *Controller) StartBackend(ctx context.Context, backendCfg *common.Backend) error {
 	if backendDisabled(backendCfg.GetType()) {
 		return fmt.Errorf("backend %q is disabled on this node (PG_NODE_DISABLE_*)", backendTypeKey(backendCfg.GetType()))
@@ -208,12 +222,18 @@ func (c *Controller) StartBackend(ctx context.Context, backendCfg *common.Backen
 		return errors.New("invalid backend type")
 	}
 
+	key := backendKey{
+		typ:      backendCfg.GetType(),
+		instance: backendInstanceID(backendCfg.GetType(), backendCfg.GetConfig()),
+	}
+
 	c.mu.Lock()
-	old := c.backends[backendCfg.GetType()]
-	c.backends[backendCfg.GetType()] = newBackend
+	old := c.backends[key]
+	c.backends[key] = newBackend
 	c.mu.Unlock()
 
-	// Replace-by-type: tear down a previous instance of the same core.
+	// Replace only the same instance; cores of the same type with a different
+	// instance id keep running alongside it.
 	if old != nil {
 		old.Shutdown()
 	}
@@ -327,6 +347,36 @@ func (c *Controller) SystemStats(ctx context.Context) *common.SystemStatsRespons
 
 // backendTypeKey maps a backend type to the short name the panel keys on
 // (matches the capabilities/versions naming: wireguard -> "wg").
+// backendInstanceID pulls the identifier that distinguishes two cores of the
+// same type out of the core config the panel sent. OpenVPN and IKEv2 are
+// identified by their inbound tag and WireGuard by its interface name — all
+// three already scope their on-disk state by that value, so instances never
+// collide. Xray is deliberately left unkeyed: one xray process serves every
+// inbound, so a second xray core should still replace the first.
+//
+// An unparseable or tag-less config falls back to "", which restores the old
+// replace-by-type behaviour rather than silently starting a duplicate.
+func backendInstanceID(t common.BackendType, configStr string) string {
+	var field string
+	switch t {
+	case common.BackendType_OPENVPN, common.BackendType_IKEV2:
+		field = "inbound_tag"
+	case common.BackendType_WIREGUARD:
+		field = "interface_name"
+	default:
+		return ""
+	}
+
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(configStr), &parsed); err != nil {
+		return ""
+	}
+	if v, ok := parsed[field].(string); ok {
+		return strings.TrimSpace(v)
+	}
+	return ""
+}
+
 func backendTypeKey(t common.BackendType) string {
 	switch t {
 	case common.BackendType_XRAY:
@@ -348,9 +398,9 @@ func backendTypeKey(t common.BackendType) string {
 // flattens away.
 func (c *Controller) UserOnlineIpList(ctx context.Context, email string) *common.StatsOnlineIpListResponse {
 	c.mu.RLock()
-	typed := make(map[common.BackendType]backend.Backend, len(c.backends))
-	for t, b := range c.backends {
-		typed[t] = b
+	typed := make(map[backendKey]backend.Backend, len(c.backends))
+	for k, b := range c.backends {
+		typed[k] = b
 	}
 	c.mu.RUnlock()
 
@@ -359,12 +409,12 @@ func (c *Controller) UserOnlineIpList(ctx context.Context, email string) *common
 		Ips:        map[string]int64{},
 		IpProtocol: map[string]string{},
 	}
-	for t, b := range typed {
+	for k, b := range typed {
 		s, err := b.GetUserOnlineIpListStats(ctx, email)
 		if err != nil || s == nil {
 			continue
 		}
-		proto := backendTypeKey(t)
+		proto := backendTypeKey(k.typ)
 		for ip, ts := range s.GetIps() {
 			if ts >= resp.Ips[ip] {
 				resp.Ips[ip] = ts
