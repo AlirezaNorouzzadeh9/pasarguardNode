@@ -73,7 +73,11 @@ func New(cfg *config.Config, ovConfig *Config, users []*common.User) (*OpenVPN, 
 		return nil, errors.New("openvpn config must not be nil")
 	}
 
-	ovConfig.workDir = filepath.Join(cfg.GeneratedConfigPath, "openvpn", ovConfig.InboundTag)
+	// derive() (multi-listener) already picked a per-listener directory; only
+	// fill in the default when it hasn't.
+	if ovConfig.workDir == "" {
+		ovConfig.workDir = filepath.Join(cfg.GeneratedConfigPath, "openvpn", ovConfig.InboundTag)
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	interval := time.Duration(cfg.StatsUpdateIntervalSeconds) * time.Second

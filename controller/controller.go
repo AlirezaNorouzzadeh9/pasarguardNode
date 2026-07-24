@@ -219,7 +219,9 @@ func (c *Controller) StartBackend(ctx context.Context, backendCfg *common.Backen
 		if err != nil {
 			return err
 		}
-		newBackend, err = openvpn.New(c.cfg, config, backendCfg.GetUsers())
+		// NewBackend starts one server per listener, so a single core can offer
+		// both UDP and TCP.
+		newBackend, err = openvpn.NewBackend(c.cfg, config, backendCfg.GetUsers())
 		if err != nil {
 			return err
 		}
