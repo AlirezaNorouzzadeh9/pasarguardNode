@@ -139,9 +139,15 @@ func New(cfg *config.Config, ikConfig *Config, users []*common.User) (*IKEv2, er
 }
 
 func (o *IKEv2) start(ctx context.Context) error {
+	// Replace the shared core config's certificate with this node's own one
+	// when PG_NODE_IKEV2_DOMAIN is set (see autocert.go).
+	if err := o.applyAutoCert(); err != nil {
+		return fmt.Errorf("ikev2 certificate: %w", err)
+	}
 	if err := o.writeConfig(); err != nil {
 		return fmt.Errorf("write ikev2 config: %w", err)
 	}
+	go o.watchAutoCert(ctx)
 	if err := o.setupNAT(); err != nil {
 		o.emitLogf("Warning", "ikev2: nat setup failed: %v", err)
 	}
