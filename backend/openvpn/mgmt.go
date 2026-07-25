@@ -14,8 +14,9 @@ import (
 type clientStatus struct {
 	CommonName    string
 	RealAddress   string
-	BytesReceived int64 // from client (client uplink)
-	BytesSent     int64 // to client (client downlink)
+	VirtualAddr   string // client's address inside the tunnel (for shaping)
+	BytesReceived int64  // from client (client uplink)
+	BytesSent     int64  // to client (client downlink)
 	ClientID      string
 }
 
@@ -227,6 +228,18 @@ func (m *mgmtClient) killClient(cid string) {
 }
 
 // requestStatus issues `status 3` and waits for the parsed snapshot.
+// statusSnapshot returns the most recent client status without asking the
+// daemon to refresh it, so the shaper can run every poll without extra round
+// trips. The stats loop already issues a `status 3` regularly, keeping this
+// fresh.
+func (m *mgmtClient) statusSnapshot() []clientStatus {
+	m.statusMu.Lock()
+	defer m.statusMu.Unlock()
+	out := make([]clientStatus, len(m.lastStatus))
+	copy(out, m.lastStatus)
+	return out
+}
+
 func (m *mgmtClient) requestStatus(timeout time.Duration) []clientStatus {
 	// Drain any stale ready signal.
 	select {
@@ -263,6 +276,7 @@ func parseStatusLine(line string) (clientStatus, bool) {
 	cs := clientStatus{
 		CommonName:  fields[1],
 		RealAddress: fields[2],
+		VirtualAddr: fields[3],
 		ClientID:    fields[10],
 	}
 	cs.BytesReceived, _ = strconv.ParseInt(fields[5], 10, 64)

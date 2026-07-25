@@ -97,7 +97,7 @@ func TestEapSecretIDMatchesSwanctlSectionName(t *testing.T) {
 // vici session yet, it must be a no-op rather than panic.
 func TestRevokeUsersNoopWithoutWork(t *testing.T) {
 	o := &IKEv2{}
-	o.revokeUsers(nil)             // nothing removed
-	o.revokeUsers([]string{""})    // empty username
-	o.revokeUsers([]string{"2"})   // vici == nil (not started)
+	o.revokeUsers(nil)           // nothing removed
+	o.revokeUsers([]string{""})  // empty username
+	o.revokeUsers([]string{"2"}) // vici == nil (not started)
 }

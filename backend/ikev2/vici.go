@@ -27,15 +27,15 @@ type remoteAuth struct {
 }
 
 type connConf struct {
-	Version    int                  `vici:"version"`
-	Proposals  []string             `vici:"proposals"`
-	Encap      string               `vici:"encap"`
-	DPDDelay   string               `vici:"dpd_delay"`
-	Pools      []string             `vici:"pools"`
-	SendCertReq string              `vici:"send_certreq"`
-	Local      localAuth            `vici:"local"`
-	Remote     remoteAuth           `vici:"remote"`
-	Children   map[string]childConf `vici:"children"`
+	Version     int                  `vici:"version"`
+	Proposals   []string             `vici:"proposals"`
+	Encap       string               `vici:"encap"`
+	DPDDelay    string               `vici:"dpd_delay"`
+	Pools       []string             `vici:"pools"`
+	SendCertReq string               `vici:"send_certreq"`
+	Local       localAuth            `vici:"local"`
+	Remote      remoteAuth           `vici:"remote"`
+	Children    map[string]childConf `vici:"children"`
 }
 
 type poolConf struct {
@@ -136,11 +136,12 @@ func (v *viciSession) terminateIKE(ikeID uint32) error {
 
 // saInfo is one active IKE SA relevant to accounting/limits.
 type saInfo struct {
-	IKEID    uint32
-	Identity string // remote EAP identity = username
-	Remote   string // remote host (client IP)
-	BytesIn  int64
-	BytesOut int64
+	IKEID      uint32
+	Identity   string   // remote EAP identity = username
+	Remote     string   // remote host (client IP)
+	VirtualIPs []string // addresses assigned to the client from the pool
+	BytesIn    int64
+	BytesOut   int64
 }
 
 // listSAs streams active IKE SAs and returns per-SA accounting info.
@@ -175,6 +176,7 @@ func (v *viciSession) listSAs() ([]saInfo, error) {
 			if info.Identity == "" {
 				info.Identity = msgString(ike, "remote-id")
 			}
+			info.VirtualIPs = msgStringList(ike, "remote-vips")
 			// Sum child SA byte counters.
 			if childs, ok := ike.Get("child-sas").(*vici.Message); ok {
 				for _, ck := range childs.Keys() {
@@ -197,6 +199,22 @@ func msgString(m *vici.Message, key string) string {
 		return v
 	}
 	return ""
+}
+
+// msgStringList reads a vici list value (e.g. remote-vips) as []string. vici
+// decodes lists as []string, but a single value can arrive as a bare string.
+func msgStringList(m *vici.Message, key string) []string {
+	switch v := m.Get(key).(type) {
+	case []string:
+		return v
+	case string:
+		if v == "" {
+			return nil
+		}
+		return []string{v}
+	default:
+		return nil
+	}
 }
 
 func parseInt64(s string) int64 {

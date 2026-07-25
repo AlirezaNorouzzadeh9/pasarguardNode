@@ -9,8 +9,9 @@ import (
 
 // userEntry is the authorization record for one user (keyed by username = user id).
 type userEntry struct {
-	password string
-	ipLimit  uint32 // max simultaneous IKE SAs; 0 = unlimited
+	password   string
+	ipLimit    uint32 // max simultaneous IKE SAs; 0 = unlimited
+	speedLimit uint32 // per-direction throughput cap kbit/s; 0 = unlimited
 }
 
 // userStore holds the desired EAP credentials for this backend's inbound. The
@@ -54,7 +55,7 @@ func (s *userStore) applyUser(u *common.User) (username string, changed bool, re
 
 	ik := u.GetProxies().GetIkev2()
 	username = ik.GetUsername()
-	entry := userEntry{password: ik.GetPassword(), ipLimit: u.GetIpLimit()}
+	entry := userEntry{password: ik.GetPassword(), ipLimit: u.GetIpLimit(), speedLimit: u.GetSpeedLimit()}
 
 	s.mu.Lock()
 	prev, existed := s.users[username]
@@ -72,7 +73,7 @@ func (s *userStore) replaceAll(users []*common.User) (removed []string) {
 			continue
 		}
 		ik := u.GetProxies().GetIkev2()
-		next[ik.GetUsername()] = userEntry{password: ik.GetPassword(), ipLimit: u.GetIpLimit()}
+		next[ik.GetUsername()] = userEntry{password: ik.GetPassword(), ipLimit: u.GetIpLimit(), speedLimit: u.GetSpeedLimit()}
 	}
 
 	s.mu.Lock()
@@ -102,6 +103,13 @@ func (s *userStore) limitFor(username string) uint32 {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.users[username].ipLimit
+}
+
+// speedLimitFor returns the per-direction cap for a user (0 = unlimited).
+func (s *userStore) speedLimitFor(username string) uint32 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.users[username].speedLimit
 }
 
 func (s *userStore) usernames() []string {
