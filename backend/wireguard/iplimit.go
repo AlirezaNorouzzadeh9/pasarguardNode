@@ -4,6 +4,7 @@ import (
 	"log"
 	"time"
 
+	"github.com/pasarguard/node/backend/ratelimit"
 	"github.com/pasarguard/node/common"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 )
@@ -26,20 +27,59 @@ func (wg *WireGuard) rememberLimits(users []*common.User, replace bool) {
 	defer wg.limitMu.Unlock()
 	if replace {
 		next := make(map[string]uint32, len(users))
+		nextSpeed := make(map[string]uint32, len(users))
 		for _, u := range users {
 			if e := u.GetEmail(); e != "" {
 				next[e] = u.GetIpLimit()
+				nextSpeed[e] = u.GetSpeedLimit()
 			}
 		}
 		wg.userLimits = next
+		wg.userSpeed = nextSpeed
 		return
+	}
+	if wg.userLimits == nil {
+		wg.userLimits = make(map[string]uint32)
+	}
+	if wg.userSpeed == nil {
+		wg.userSpeed = make(map[string]uint32)
 	}
 	for _, u := range users {
 		if e := u.GetEmail(); e != "" {
 			wg.userLimits[e] = u.GetIpLimit()
+			wg.userSpeed[e] = u.GetSpeedLimit()
 			delete(wg.kicked, e) // an explicit (re)sync clears a pending kick
 		}
 	}
+}
+
+// ShapedClients lists this backend's peers that carry a speed limit, together
+// with their tunnel addresses, for the node's traffic shaper. WireGuard peers
+// have fixed tunnel addresses, so every configured peer with a limit is
+// returned regardless of whether it is currently connected.
+func (wg *WireGuard) ShapedClients() []ratelimit.Client {
+	wg.limitMu.Lock()
+	speed := make(map[string]uint32, len(wg.userSpeed))
+	for e, s := range wg.userSpeed {
+		speed[e] = s
+	}
+	wg.limitMu.Unlock()
+
+	var clients []ratelimit.Client
+	for _, peer := range wg.peerStore.GetAll() {
+		limit := speed[peer.Email]
+		if limit == 0 {
+			continue
+		}
+		for _, ipnet := range peer.AllowedIPs {
+			clients = append(clients, ratelimit.Client{
+				User:      peer.Email,
+				Address:   ipnet.IP.String(),
+				LimitKbps: limit,
+			})
+		}
+	}
+	return clients
 }
 
 type wgLimitAction struct {

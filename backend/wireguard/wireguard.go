@@ -103,6 +103,7 @@ type WireGuard struct {
 	// against distinct endpoint IPs seen within a sliding window.
 	limitMu     sync.Mutex
 	userLimits  map[string]uint32               // email -> ip_limit (0 = unlimited)
+	userSpeed   map[string]uint32               // email -> speed_limit kbit/s (0 = unlimited)
 	ipWindow    map[string]map[string]time.Time // email -> endpoint ip -> last seen
 	overStrikes map[string]int                  // email -> consecutive over-limit polls
 	kicked      map[string]time.Time            // email -> time disconnected for exceeding the limit
@@ -180,6 +181,7 @@ func newWithManagerFactory(cfg *config.Config, wgConfig *Config, users []*common
 		newManager:     managerFactory,
 		state:          lifecycleStarting,
 		userLimits:     make(map[string]uint32),
+		userSpeed:      make(map[string]uint32),
 		ipWindow:       make(map[string]map[string]time.Time),
 		overStrikes:    make(map[string]int),
 		kicked:         make(map[string]time.Time),

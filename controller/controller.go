@@ -16,6 +16,7 @@ import (
 	"github.com/pasarguard/node/backend"
 	"github.com/pasarguard/node/backend/ikev2"
 	"github.com/pasarguard/node/backend/openvpn"
+	"github.com/pasarguard/node/backend/ratelimit"
 	"github.com/pasarguard/node/backend/wireguard"
 	"github.com/pasarguard/node/backend/xray"
 	"github.com/pasarguard/node/common"
@@ -54,6 +55,10 @@ type Controller struct {
 	stats       *common.SystemStatsResponse
 	cancelFunc  context.CancelFunc
 	mu          sync.RWMutex
+
+	// shaper applies per-user speed limits with tc; nil until a limited client
+	// appears, so nodes that never use limits install nothing.
+	shaper *ratelimit.Manager
 
 	// Installed-backend capabilities are detected once (they don't change while
 	// the node runs) and reused, since version probes exec external commands.
@@ -108,6 +113,8 @@ func (c *Controller) Disconnect() {
 	for _, b := range backends {
 		b.Shutdown()
 	}
+
+	c.closeShaping()
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -307,6 +314,7 @@ func (c *Controller) recordSystemStats(ctx context.Context) {
 	}
 
 	collect()
+	c.refreshShaping()
 
 	for {
 		select {
@@ -314,6 +322,7 @@ func (c *Controller) recordSystemStats(ctx context.Context) {
 			return
 		case <-ticker.C:
 			collect()
+			c.refreshShaping()
 		}
 	}
 }
