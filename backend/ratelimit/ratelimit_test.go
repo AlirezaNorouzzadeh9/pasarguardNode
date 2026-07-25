@@ -196,6 +196,10 @@ func TestDownloadAndUploadGetDistinctClasses(t *testing.T) {
 	if down == up {
 		t.Fatal("the two directions must not share a class, or the cap would be halved")
 	}
+	// 1:0 is the root handle; a client class must never land on it.
+	if down == "1:0" || up == "1:0" {
+		t.Fatalf("the first client collided with the root handle: down=%s up=%s", down, up)
+	}
 	if markValue(firstMark, Download) == markValue(firstMark, Upload) {
 		t.Fatal("the two directions must not share a mark, or one filter would catch both")
 	}

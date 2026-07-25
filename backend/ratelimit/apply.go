@@ -23,10 +23,12 @@ func (execRunner) output(name string, args ...string) (string, error) {
 	return string(out), err
 }
 
-// classID is the tc handle for one (client, direction) pair. The mark doubles
-// as the minor number, so a class is always derivable from its mark.
+// classID is the tc handle for one (client, direction) pair, derived from the
+// mark so a class is always recoverable from it. The low bits of the mark start
+// at 0, but minor 0 is the root handle (1:0 == 1:), so shift by one: the first
+// client's download class is 1:2, its upload 1:3, and so on.
 func classID(mark uint32, dir Direction) string {
-	minor := (mark & 0xffff) * 2
+	minor := ((mark & 0xffff) + 1) * 2
 	if dir == Upload {
 		minor++
 	}
