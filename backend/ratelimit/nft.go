@@ -11,7 +11,8 @@ import "fmt"
 const (
 	nftFamily = "inet"
 	nftTable  = "pg_shaper"
-	nftChain  = "mark"
+	// Not "mark": that is an nft keyword and the parser rejects it as a chain name.
+	nftChain = "shape"
 )
 
 // ensureMarkChain creates the table and the forward-hook chain if absent. The
