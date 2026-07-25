@@ -205,6 +205,10 @@ func newWithManagerFactory(cfg *config.Config, wgConfig *Config, users []*common
 	}
 
 	normalizedUsers := normalizeUsers(users)
+	// Seed per-user limits from the startup set too, not only on later syncs —
+	// otherwise a user's device and speed limits are ignored until the panel
+	// happens to push an update.
+	wg.rememberLimits(normalizedUsers, true)
 	startupExistingByKey := wg.buildExistingPeersByKeySnapshot()
 	startupDesiredPeers, err := wg.collectDesiredPeers(normalizedUsers)
 	if err != nil {
