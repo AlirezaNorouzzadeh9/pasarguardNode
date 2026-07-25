@@ -91,7 +91,7 @@ func TestApplyShapesEachDirection(t *testing.T) {
 	// Marking must go through nft (the node runs an nftables ruleset; legacy
 	// iptables cannot touch its forward chain), in the forward hook where an
 	// IPsec client's tunnel address is still readable.
-	if !r.contains("nft add rule inet pg_shaper mark") {
+	if !r.contains("nft add rule inet pg_shaper shape") {
 		t.Fatal("marks must be set via an nft rule in the shaper chain")
 	}
 	if !r.contains("hook forward") {
