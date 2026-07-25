@@ -56,6 +56,12 @@ func newTestManager() (*Manager, *fakeRunner) {
 	r := &fakeRunner{}
 	m := New("eth0")
 	m.runner = r
+	// Record nft invocations through the same recorder so tests can assert on
+	// marking without a live nftables.
+	m.nft = func(args ...string) error {
+		r.cmds = append(r.cmds, "nft "+strings.Join(args, " "))
+		return nil
+	}
 	return m, r
 }
 
@@ -73,19 +79,23 @@ func TestApplyShapesEachDirection(t *testing.T) {
 	if got := r.count("tc class add dev eth0"); got < 3 {
 		t.Fatalf("expected a default class plus one per direction, got %d class adds", got)
 	}
-	if !r.contains("-d 10.29.0.5") {
+	if !r.contains("ip daddr 10.29.0.5") {
 		t.Fatal("download traffic must be matched on the destination address")
 	}
-	if !r.contains("-s 10.29.0.5") {
+	if !r.contains("ip saddr 10.29.0.5") {
 		t.Fatal("upload traffic must be matched on the source address")
 	}
 	if !r.contains("rate 8000kbit") {
 		t.Fatal("the class rate must be the user's ceiling")
 	}
-	// Marking has to happen in mangle FORWARD: that is the only place an IPsec
-	// client's tunnel address is still readable.
-	if !r.contains("-t mangle -A FORWARD") {
-		t.Fatal("marks must be set in mangle FORWARD")
+	// Marking must go through nft (the node runs an nftables ruleset; legacy
+	// iptables cannot touch its forward chain), in the forward hook where an
+	// IPsec client's tunnel address is still readable.
+	if !r.contains("nft add rule inet pg_shaper mark") {
+		t.Fatal("marks must be set via an nft rule in the shaper chain")
+	}
+	if !r.contains("hook forward") {
+		t.Fatal("the mark chain must hook forward")
 	}
 }
 
@@ -133,11 +143,22 @@ func TestApplyRemovesDepartedClients(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if !r.contains("-t mangle -D FORWARD -d 10.29.0.6") {
-		t.Fatal("the departed client's mark rules must be removed")
+	// The chain is rebuilt on removal; the departed address must not appear in
+	// the last rebuild, while the remaining one must.
+	last := lastFlushOnward(r.cmds)
+	for _, c := range last {
+		if strings.Contains(c, "10.29.0.6") {
+			t.Fatal("the departed client must not be marked after removal")
+		}
 	}
-	if r.contains("-t mangle -D FORWARD -d 10.29.0.5") {
-		t.Fatal("the remaining client must be left alone")
+	found := false
+	for _, c := range last {
+		if strings.Contains(c, "ip daddr 10.29.0.5") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("the remaining client must still be marked")
 	}
 	if _, still := m.applied["10.29.0.6"]; still {
 		t.Fatal("the departed client must be dropped from the applied set")
@@ -164,8 +185,8 @@ func TestCloseRemovesEverything(t *testing.T) {
 	if !r.contains("tc qdisc del dev eth0 root") {
 		t.Fatal("Close must remove the qdisc so no shaping is left behind")
 	}
-	if !r.contains("-t mangle -D FORWARD") {
-		t.Fatal("Close must remove the mark rules")
+	if !r.contains("nft delete table inet pg_shaper") {
+		t.Fatal("Close must remove the nft shaper table")
 	}
 	if len(m.applied) != 0 {
 		t.Fatal("Close must clear the applied set")
@@ -203,4 +224,19 @@ func TestDownloadAndUploadGetDistinctClasses(t *testing.T) {
 	if markValue(firstMark, Download) == markValue(firstMark, Upload) {
 		t.Fatal("the two directions must not share a mark, or one filter would catch both")
 	}
+}
+
+// lastFlushOnward returns the commands from the last chain flush onward, i.e.
+// the most recent rebuild of the mark chain.
+func lastFlushOnward(cmds []string) []string {
+	idx := -1
+	for i, c := range cmds {
+		if strings.Contains(c, "flush chain inet pg_shaper") {
+			idx = i
+		}
+	}
+	if idx < 0 {
+		return cmds
+	}
+	return cmds[idx:]
 }

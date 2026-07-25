@@ -49,18 +49,15 @@ func (m *Manager) setupRoot() error {
 		"htb", "rate", "1000000mbit"); err != nil {
 		return fmt.Errorf("install default class on %s: %w", m.iface, err)
 	}
-	// One filter for everyone: the class is taken straight from the mark.
-	if err := m.runner.run("tc", "filter", "add", "dev", m.iface, "parent", "1:", "protocol", "all",
-		"prio", "1", "handle", fmt.Sprintf("%d", markMask), "fw"); err != nil {
-		// Not fatal on its own; per-client filters below still classify.
-		log.Printf("ratelimit: mark filter on %s not installed: %v", m.iface, err)
-	}
+	// Per-client fw filters (added with each class) map a packet's mark to its
+	// class; no global filter is needed.
 	return nil
 }
 
 func (m *Manager) teardownRoot() {
 	// Ignore errors: there is usually nothing to delete.
 	_ = m.runner.run("tc", "qdisc", "del", "dev", m.iface, "root")
+	m.teardownMarks()
 }
 
 // allocMark hands out a mark, reusing one from a departed client when possible.
@@ -93,12 +90,17 @@ func (m *Manager) addLocked(c Client) error {
 		if err := m.addClass(mark, dir, c.LimitKbps); err != nil {
 			return err
 		}
-		if err := m.addMarkRule(c.Address, mark, dir); err != nil {
+		// The fw filter maps this mark to the class; the mark itself is set by
+		// the nft chain (see syncMarks).
+		if err := m.addFilter(mark, dir); err != nil {
 			return err
 		}
 	}
 
 	m.applied[c.Address] = c
+	if err := m.syncMarks(); err != nil {
+		return err
+	}
 	log.Printf("ratelimit: %s (%s) capped at %d kbit/s per direction", c.User, c.Address, c.LimitKbps)
 	return nil
 }
@@ -122,13 +124,15 @@ func (m *Manager) removeLocked(addr string) {
 	mark, ok := m.marks[addr]
 	if ok {
 		for _, dir := range []Direction{Download, Upload} {
-			m.delMarkRule(addr, mark, dir)
+			m.delFilter(mark, dir)
 			m.delClass(mark, dir)
 		}
 		delete(m.marks, addr)
 		m.freed = append(m.freed, mark)
 	}
 	delete(m.applied, addr)
+	// Rebuild the mark chain so the departed client's rules are gone.
+	_ = m.syncMarks()
 }
 
 func (m *Manager) addClass(mark uint32, dir Direction, kbps uint32) error {
@@ -147,21 +151,6 @@ func (m *Manager) delClass(mark uint32, dir Direction) {
 	_ = m.runner.run("tc", "class", "del", "dev", m.iface, "classid", classID(mark, dir))
 }
 
-// markArgs builds the mangle rule that tags this client's packets. Marking
-// happens in FORWARD, where the tunnel address is still readable even for
-// IPsec, whose packets are encrypted before they reach the egress qdisc.
-func (m *Manager) markArgs(addr string, mark uint32, dir Direction, action string) []string {
-	match := "-d"
-	if dir == Upload {
-		match = "-s"
-	}
-	return []string{
-		"-t", "mangle", action, "FORWARD", match, addr,
-		"-j", "MARK", "--set-xmark", fmt.Sprintf("0x%x/0x%x", markValue(mark, dir), markMask),
-		"-m", "comment", "--comment", commentFor(addr, dir),
-	}
-}
-
 // markValue folds the direction into the mark so one fw filter can separate the
 // two classes.
 func markValue(mark uint32, dir Direction) uint32 {
@@ -176,21 +165,14 @@ func commentFor(addr string, dir Direction) string {
 	return fmt.Sprintf("pg_node_rl %s %s", addr, dir)
 }
 
-func (m *Manager) addMarkRule(addr string, mark uint32, dir Direction) error {
-	// -C first: re-applying the same state should not stack duplicate rules.
-	if err := m.runner.run("iptables", m.markArgs(addr, mark, dir, "-C")...); err == nil {
-		return nil
-	}
-	if err := m.runner.run("iptables", m.markArgs(addr, mark, dir, "-A")...); err != nil {
-		return fmt.Errorf("mark %s traffic for %s: %w", dir, addr, err)
-	}
-	// The mark alone does not pick a class; this filter does.
+// addFilter installs the tc fw filter mapping a packet's mark to its class. The
+// mark itself is set by the nft chain in syncMarks.
+func (m *Manager) addFilter(mark uint32, dir Direction) error {
 	return m.runner.run("tc", "filter", "add", "dev", m.iface, "parent", "1:", "protocol", "all",
 		"prio", "1", "handle", fmt.Sprintf("%d", markValue(mark, dir)), "fw", "flowid", classID(mark, dir))
 }
 
-func (m *Manager) delMarkRule(addr string, mark uint32, dir Direction) {
-	_ = m.runner.run("iptables", m.markArgs(addr, mark, dir, "-D")...)
+func (m *Manager) delFilter(mark uint32, dir Direction) {
 	_ = m.runner.run("tc", "filter", "del", "dev", m.iface, "parent", "1:", "protocol", "all",
 		"prio", "1", "handle", fmt.Sprintf("%d", markValue(mark, dir)), "fw")
 }

@@ -69,7 +69,10 @@ type Manager struct {
 	// nextMark is the next never-used mark.
 	nextMark uint32
 	runner   commandRunner
-	started  bool
+	// nft runs an nft command; swappable so tests observe marking without a
+	// live nftables. Defaults to the real nft on Linux, a no-op elsewhere.
+	nft     func(args ...string) error
+	started bool
 }
 
 // commandRunner exists so tests can observe the commands without a live kernel.
@@ -97,6 +100,7 @@ func New(iface string) *Manager {
 		marks:    map[string]uint32{},
 		nextMark: firstMark,
 		runner:   execRunner{},
+		nft:      defaultNFT,
 	}
 }
 
