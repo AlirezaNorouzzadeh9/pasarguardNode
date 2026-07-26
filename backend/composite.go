@@ -5,6 +5,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/pasarguard/node/backend/ratelimit"
 	"github.com/pasarguard/node/common"
 )
 
@@ -23,6 +24,28 @@ func NewComposite(backends []Backend) *Composite {
 		return nil
 	}
 	return &Composite{backends: backends}
+}
+
+// speedShaped is the optional interface a backend implements to report clients
+// that carry a speed limit. It mirrors the controller's shapedBackend so the
+// composite can forward the call.
+type speedShaped interface {
+	ShapedClients() []ratelimit.Client
+}
+
+// ShapedClients merges the shaped clients of every member that supports it, so a
+// composite backend (e.g. OpenVPN split across a UDP and a TCP listener) still
+// gets its clients shaped. Without this, the controller's type assertion would
+// see only the composite — which lacks the method — and silently skip shaping
+// every OpenVPN client on a multi-listener node.
+func (c *Composite) ShapedClients() []ratelimit.Client {
+	var out []ratelimit.Client
+	for _, b := range c.backends {
+		if sb, ok := b.(speedShaped); ok {
+			out = append(out, sb.ShapedClients()...)
+		}
+	}
+	return out
 }
 
 // Started reports true when at least one underlying backend is up. The node is
