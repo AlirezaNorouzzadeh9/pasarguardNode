@@ -52,8 +52,14 @@ func commentFor(addr string, dir Direction) string {
 // interface. `replace` makes this idempotent, so it can run every reconcile and
 // pick up interfaces (e.g. an OpenVPN tun) that appeared after the last pass.
 func (m *Manager) ensureRoot(iface string) error {
-	if err := m.runner.run("tc", "qdisc", "replace", "dev", iface, "root", "handle", "1:", "htb", "default", "1"); err != nil {
-		return fmt.Errorf("install shaping root on %s: %w", iface, err)
+	// `add`, not `replace`: htb rejects changing its `default` option on an
+	// existing root ("Change operation not supported"), and the root's options
+	// never change, so an already-present root is success. Classes and filters
+	// below still use replace, which htb does support.
+	if err := m.runner.run("tc", "qdisc", "add", "dev", iface, "root", "handle", "1:", "htb", "default", "1"); err != nil {
+		if !alreadyExists(err) {
+			return fmt.Errorf("install shaping root on %s: %w", iface, err)
+		}
 	}
 	// Class 1:1 is the default: unshaped users and the node's own traffic pass
 	// through it uncapped.
@@ -80,6 +86,15 @@ func (m *Manager) delClass(iface string, mark uint32, dir Direction) {
 
 func (m *Manager) delRoot(iface string) {
 	_ = m.runner.run("tc", "qdisc", "del", "dev", iface, "root")
+}
+
+// alreadyExists reports whether a tc/nft error just means the object was there.
+func alreadyExists(err error) bool {
+	if err == nil {
+		return false
+	}
+	s := strings.ToLower(err.Error())
+	return strings.Contains(s, "file exists") || strings.Contains(s, "exclusivity flag")
 }
 
 // allocMark hands out a mark, reusing one from a departed client when possible.

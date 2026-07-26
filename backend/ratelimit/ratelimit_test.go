@@ -74,7 +74,7 @@ func TestApplyShapesEachDirection(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if !r.contains("tc qdisc replace dev eth0 root handle 1: htb") {
+	if !r.contains("tc qdisc add dev eth0 root handle 1: htb") {
 		t.Fatal("expected the HTB root to be installed on first use")
 	}
 	// One class and one mark rule per direction.
