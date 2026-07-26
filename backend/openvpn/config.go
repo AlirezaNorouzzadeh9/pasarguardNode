@@ -10,19 +10,21 @@ import (
 // Config is the OpenVPN backend configuration decoded from Backend.config
 // (an opaque JSON string produced by the panel's OpenVPNConfig.to_str()).
 type Config struct {
-	InboundTag   string   `json:"inbound_tag"`
-	Port         int      `json:"port"`
-	Proto        string   `json:"proto"`
-	Device       string   `json:"device"`
-	ServerSubnet string   `json:"server_subnet"`
-	DNS          []string `json:"dns"`
-	Cipher       string   `json:"cipher"`
-	DataCiphers  []string `json:"data_ciphers"`
-	Auth         string   `json:"auth"`
-	Keepalive    string   `json:"keepalive"`
-	MaxClients   int      `json:"max_clients"`
-	DuplicateCN  bool     `json:"duplicate_cn"`
-	Push         []string `json:"push"`
+	InboundTag   string `json:"inbound_tag"`
+	Port         int    `json:"port"`
+	Proto        string `json:"proto"`
+	Device       string `json:"device"`
+	ServerSubnet string `json:"server_subnet"`
+	// EgressInterface, if set, routes this subnet out that interface (see egress).
+	EgressInterface string   `json:"egress_interface"`
+	DNS             []string `json:"dns"`
+	Cipher          string   `json:"cipher"`
+	DataCiphers     []string `json:"data_ciphers"`
+	Auth            string   `json:"auth"`
+	Keepalive       string   `json:"keepalive"`
+	MaxClients      int      `json:"max_clients"`
+	DuplicateCN     bool     `json:"duplicate_cn"`
+	Push            []string `json:"push"`
 	// ExtraServerDirectives are raw server.conf lines appended verbatim. They
 	// let operators tune the server (mssfix, sndbuf, compress, …) without the
 	// panel modelling every option. Critical lines (management, status, certs)

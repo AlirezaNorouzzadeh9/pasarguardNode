@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/pasarguard/node/backend/egress"
 	"log"
 	"os"
 	"os/exec"
@@ -36,7 +37,7 @@ const (
 //  3. eth0 as last-resort fallback
 //
 // Disable all of this with PG_NODE_WG_HOST_ROUTING=0.
-func applyLinuxHostRouting(wgInterfaceName string) func() {
+func applyLinuxHostRouting(wgInterfaceName, egressIface, subnet string) func() {
 	if v := strings.TrimSpace(os.Getenv(envHostRouting)); v == "0" || strings.EqualFold(v, "false") {
 		return nil
 	}
@@ -46,7 +47,10 @@ func applyLinuxHostRouting(wgInterfaceName string) func() {
 		wgIf = "wg0"
 	}
 
-	outIf := strings.TrimSpace(os.Getenv(envNATOutputInterface))
+	outIf := strings.TrimSpace(egressIface)
+	if outIf == "" {
+		outIf = strings.TrimSpace(os.Getenv(envNATOutputInterface))
+	}
 	if outIf == "" {
 		var ok bool
 		outIf, ok = linuxDefaultRouteInterfaceIPv4()
@@ -84,7 +88,16 @@ func applyLinuxHostRouting(wgInterfaceName string) func() {
 		log.Printf("wireguard host routing: nftables forward rules failed: %v", err)
 	}
 
+	// Per-core egress: steer this subnet's traffic out the chosen interface.
+	egressCleanup, err := egress.Apply(subnet, egressIface)
+	if err != nil {
+		log.Printf("wireguard host routing: egress routing for %s via %s failed: %v", subnet, egressIface, err)
+	}
+
 	return func() {
+		if egressCleanup != nil {
+			egressCleanup()
+		}
 		if err := cleanupLinuxHostRouting(ownerID); err != nil {
 			log.Printf("wireguard host routing: cleanup failed for owner %q: %v", ownerID, err)
 		}

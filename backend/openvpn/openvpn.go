@@ -122,7 +122,7 @@ func New(cfg *config.Config, ovConfig *Config, users []*common.User) (*OpenVPN, 
 	}
 	go o.mgmt.run()
 
-	o.hostRouting = applyHostRouting(ovConfig.ServerSubnet)
+	o.hostRouting = applyHostRouting(ovConfig.ServerSubnet, ovConfig.EgressInterface)
 
 	o.mu.Lock()
 	o.state = lifecycleRunning

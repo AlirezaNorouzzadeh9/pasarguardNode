@@ -21,7 +21,7 @@ func TestShapedClients(t *testing.T) {
 		peerStore: NewPeerStore(),
 		userSpeed: map[string]uint32{
 			"alice": 8000, // 8 Mbit
-			"bob":   0,     // unlimited
+			"bob":   0,    // unlimited
 		},
 	}
 	k1, _ := wgtypes.GeneratePrivateKey()

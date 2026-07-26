@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"strings"
 
+	"github.com/pasarguard/node/backend/egress"
 	"github.com/pasarguard/node/backend/hostroute"
 )
 
@@ -22,7 +23,7 @@ const (
 // rule for the OpenVPN server subnet, returning a cleanup closure.
 //
 // Disable with PG_NODE_OPENVPN_HOST_ROUTING=0.
-func applyHostRouting(serverSubnet string) func() {
+func applyHostRouting(serverSubnet, egressIface string) func() {
 	if v := strings.TrimSpace(os.Getenv(envOpenVPNHostRouting)); v == "0" || strings.EqualFold(v, "false") {
 		return nil
 	}
@@ -34,7 +35,18 @@ func applyHostRouting(serverSubnet string) func() {
 		log.Printf("openvpn host routing: enabling IPv4 forwarding failed: %v", err)
 	}
 
-	outIf := strings.TrimSpace(os.Getenv(envOpenVPNNATInterface))
+	// A per-core egress interface wins over the global env override.
+	outIf := strings.TrimSpace(egressIface)
+	if outIf == "" {
+		outIf = strings.TrimSpace(os.Getenv(envOpenVPNNATInterface))
+	}
+
+	// Steer this subnet out the egress interface (policy routing). NAT below
+	// already targets outIf, so together they send the subnet's traffic there.
+	egressCleanup, err := egress.Apply(serverSubnet, egressIface)
+	if err != nil {
+		log.Printf("openvpn host routing: egress routing for %s via %s failed: %v", serverSubnet, egressIface, err)
+	}
 
 	masq := func(action string) error {
 		args := []string{"-t", "nat", action, "POSTROUTING", "-s", serverSubnet}
@@ -63,6 +75,9 @@ func applyHostRouting(serverSubnet string) func() {
 	}
 
 	return func() {
+		if egressCleanup != nil {
+			egressCleanup()
+		}
 		if err := masq("-D"); err != nil {
 			log.Printf("openvpn host routing: iptables cleanup failed: %v", err)
 		}

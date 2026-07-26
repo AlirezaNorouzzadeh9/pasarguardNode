@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"strings"
 
+	"github.com/pasarguard/node/backend/egress"
 	"github.com/pasarguard/node/backend/hostroute"
 )
 
@@ -21,11 +22,11 @@ const (
 // setupNAT enables IPv4 forwarding and MASQUERADEs the client pool, storing a
 // cleanup closure on the backend.
 func (o *IKEv2) setupNAT() error {
-	o.hostRouting = applyHostRouting(o.config.Pool)
+	o.hostRouting = applyHostRouting(o.config.Pool, o.config.EgressInterface)
 	return nil
 }
 
-func applyHostRouting(pool string) func() {
+func applyHostRouting(pool, egressIface string) func() {
 	if v := strings.TrimSpace(os.Getenv(envIKEv2HostRouting)); v == "0" || strings.EqualFold(v, "false") {
 		return nil
 	}
@@ -35,7 +36,14 @@ func applyHostRouting(pool string) func() {
 	if err := ensureIPv4Forwarding(); err != nil {
 		log.Printf("ikev2 host routing: enabling IPv4 forwarding failed: %v", err)
 	}
-	outIf := strings.TrimSpace(os.Getenv(envIKEv2NATInterface))
+	outIf := strings.TrimSpace(egressIface)
+	if outIf == "" {
+		outIf = strings.TrimSpace(os.Getenv(envIKEv2NATInterface))
+	}
+	egressCleanup, err := egress.Apply(pool, egressIface)
+	if err != nil {
+		log.Printf("ikev2 host routing: egress routing for %s via %s failed: %v", pool, egressIface, err)
+	}
 	masq := func(action string) error {
 		args := []string{"-t", "nat", action, "POSTROUTING", "-s", pool}
 		if outIf != "" {
@@ -61,6 +69,9 @@ func applyHostRouting(pool string) func() {
 	}
 
 	return func() {
+		if egressCleanup != nil {
+			egressCleanup()
+		}
 		if err := masq("-D"); err != nil {
 			log.Printf("ikev2 host routing: iptables cleanup failed: %v", err)
 		}

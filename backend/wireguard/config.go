@@ -13,12 +13,13 @@ import (
 
 // Config represents the WireGuard configuration
 type Config struct {
-	InterfaceName string         `json:"interface_name"`
-	PrivateKey    string         `json:"private_key"`
-	PreSharedKey  string         `json:"pre_shared_key,omitempty"`
-	ListenPort    int            `json:"listen_port"`
-	Address       []string       `json:"address"`
-	Latency       *LatencyConfig `json:"latency,omitempty"`
+	InterfaceName   string         `json:"interface_name"`
+	PrivateKey      string         `json:"private_key"`
+	PreSharedKey    string         `json:"pre_shared_key,omitempty"`
+	ListenPort      int            `json:"listen_port"`
+	Address         []string       `json:"address"`
+	EgressInterface string         `json:"egress_interface"`
+	Latency         *LatencyConfig `json:"latency,omitempty"`
 
 	privateKeyValue   wgtypes.Key
 	privateKeySet     bool
@@ -173,4 +174,16 @@ func GenerateKeyPair() (privateKey, publicKey string, err error) {
 	}
 
 	return privKey.String(), privKey.PublicKey().String(), nil
+}
+
+// PrimarySubnet returns the network of the interface's first address (e.g.
+// "10.0.0.1/8" -> "10.0.0.0/8"), used to scope per-core egress routing. Empty
+// if there is no valid address.
+func (c *Config) PrimarySubnet() string {
+	for _, addr := range c.Address {
+		if _, ipNet, err := net.ParseCIDR(strings.TrimSpace(addr)); err == nil {
+			return ipNet.String()
+		}
+	}
+	return ""
 }

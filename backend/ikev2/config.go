@@ -9,16 +9,17 @@ import (
 // Config is the IKEv2 backend configuration decoded from Backend.config (an
 // opaque JSON string produced by the panel's IKEv2Config.to_str()).
 type Config struct {
-	InboundTag   string   `json:"inbound_tag"`
-	ServerAddr   string   `json:"server_addr"`
-	Identity     string   `json:"identity"`
-	Pool         string   `json:"pool"`
-	DNS          []string `json:"dns"`
-	IKEProposals []string `json:"ike_proposals"`
-	ESPProposals []string `json:"esp_proposals"`
-	CACert       string   `json:"ca_cert"`
-	ServerCert   string   `json:"server_cert"`
-	ServerKey    string   `json:"server_key"`
+	InboundTag      string   `json:"inbound_tag"`
+	ServerAddr      string   `json:"server_addr"`
+	Identity        string   `json:"identity"`
+	Pool            string   `json:"pool"`
+	EgressInterface string   `json:"egress_interface"`
+	DNS             []string `json:"dns"`
+	IKEProposals    []string `json:"ike_proposals"`
+	ESPProposals    []string `json:"esp_proposals"`
+	CACert          string   `json:"ca_cert"`
+	ServerCert      string   `json:"server_cert"`
+	ServerKey       string   `json:"server_key"`
 
 	workDir string
 }
