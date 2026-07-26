@@ -62,6 +62,8 @@ func newTestManager() (*Manager, *fakeRunner) {
 		r.cmds = append(r.cmds, "nft "+strings.Join(args, " "))
 		return nil
 	}
+	// Pin the interface set so tests don't depend on the host's real NICs.
+	m.interfaces = func() []string { return []string{"eth0"} }
 	return m, r
 }
 
@@ -72,11 +74,11 @@ func TestApplyShapesEachDirection(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if !r.contains("tc qdisc add dev eth0 root handle 1: htb") {
+	if !r.contains("tc qdisc replace dev eth0 root handle 1: htb") {
 		t.Fatal("expected the HTB root to be installed on first use")
 	}
 	// One class and one mark rule per direction.
-	if got := r.count("tc class add dev eth0"); got < 3 {
+	if got := r.count("tc class replace dev eth0"); got < 3 {
 		t.Fatalf("expected a default class plus one per direction, got %d class adds", got)
 	}
 	if !r.contains("ip daddr 10.29.0.5") {
@@ -100,18 +102,23 @@ func TestApplyShapesEachDirection(t *testing.T) {
 }
 
 func TestApplyIsIdempotent(t *testing.T) {
-	m, r := newTestManager()
+	m, _ := newTestManager()
 	client := []Client{{User: "alice", Address: "10.29.0.5", LimitKbps: 8000}}
 
+	// Applying twice must converge to the same state; the commands are
+	// declarative (replace), so re-running them is harmless.
 	if err := m.Apply(client); err != nil {
 		t.Fatal(err)
 	}
-	before := len(r.cmds)
+	firstMarkVal := m.marks["10.29.0.5"]
 	if err := m.Apply(client); err != nil {
 		t.Fatal(err)
 	}
-	if len(r.cmds) != before {
-		t.Fatalf("re-applying an unchanged set must not touch anything, got %d extra commands", len(r.cmds)-before)
+	if len(m.applied) != 1 {
+		t.Fatalf("re-applying an unchanged set must keep exactly one client, got %d", len(m.applied))
+	}
+	if m.marks["10.29.0.5"] != firstMarkVal {
+		t.Fatal("a re-applied client must keep its mark")
 	}
 }
 
@@ -123,11 +130,8 @@ func TestApplyUpdatesChangedCeiling(t *testing.T) {
 	if err := m.Apply([]Client{{User: "alice", Address: "10.29.0.5", LimitKbps: 2000}}); err != nil {
 		t.Fatal(err)
 	}
-	if !r.contains("tc class change") || !r.contains("rate 2000kbit") {
-		t.Fatal("a changed ceiling should be applied with a class change")
-	}
-	if r.contains("tc class del") {
-		t.Fatal("changing a ceiling must not tear the client's classes down")
+	if !r.contains("rate 2000kbit") {
+		t.Fatal("a changed ceiling should be re-applied at the new rate")
 	}
 }
 
@@ -170,8 +174,11 @@ func TestZeroLimitIsNotShaped(t *testing.T) {
 	if err := m.Apply([]Client{{User: "alice", Address: "10.29.0.5", LimitKbps: 0}}); err != nil {
 		t.Fatal(err)
 	}
-	if len(r.cmds) != 0 {
-		t.Fatalf("an unlimited user must install nothing, got: %v", r.cmds)
+	if r.contains("tc class replace dev eth0 parent 1: classid 1:2") {
+		t.Fatal("an unlimited user must not get a shaping class")
+	}
+	if len(m.applied) != 0 {
+		t.Fatal("an unlimited user must not be recorded as shaped")
 	}
 }
 

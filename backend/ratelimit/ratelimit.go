@@ -9,12 +9,15 @@
 //
 // How it is wired:
 //
-//   - One HTB qdisc on the egress interface holds a class per (user,
-//     direction). The class rate is the user's ceiling.
-//   - Packets are classified by firewall mark rather than by address, so a
-//     single tc filter serves every backend. Marks are set in mangle FORWARD,
-//     where the client's tunnel address is still visible — including for IPsec,
-//     whose packets are encrypted by the time they reach the egress qdisc.
+//   - An HTB qdisc with a class per (user, direction) is installed on the egress
+//     interface AND on each tunnel interface. This matters because tc only
+//     shapes traffic leaving the interface it hangs on: a client's UPLOAD
+//     egresses eth0, but its DOWNLOAD egresses the tunnel interface (wg/tun) —
+//     so shaping only eth0 would cap upload and leave download wide open.
+//   - Packets are classified by firewall mark, not address, so one filter
+//     serves every interface and backend. Marks are set with nft in the forward
+//     hook, where the client's tunnel address is still visible, and persist to
+//     whichever interface the packet finally leaves by.
 //   - Download and upload get separate classes, so an "8 Mbit" user gets 8
 //     Mbit each way rather than 8 shared.
 //
@@ -24,6 +27,7 @@ package ratelimit
 
 import (
 	"fmt"
+	"log"
 	"sort"
 	"sync"
 )
@@ -58,8 +62,8 @@ type Client struct {
 // Manager owns the tc and mark state for one node.
 type Manager struct {
 	mu sync.Mutex
-	// iface is the egress interface the shaping hangs off.
-	iface string
+	// egress is the node's internet-facing interface (upload leaves here).
+	egress string
 	// applied is the state currently installed, keyed by tunnel address.
 	applied map[string]Client
 	// marks maps an address to the firewall mark handed to it.
@@ -68,11 +72,17 @@ type Manager struct {
 	freed []uint32
 	// nextMark is the next never-used mark.
 	nextMark uint32
+	// ifaceSet is the set of interfaces the shaping tree was last installed on,
+	// so departed clients and Close can be cleaned off exactly those.
+	ifaceSet map[string]struct{}
 	runner   commandRunner
 	// nft runs an nft command; swappable so tests observe marking without a
 	// live nftables. Defaults to the real nft on Linux, a no-op elsewhere.
-	nft     func(args ...string) error
-	started bool
+	nft func(args ...string) error
+	// interfaces returns every interface a class tree must hang on: the egress
+	// (for upload) plus the tunnel interfaces (for download, which leaves via
+	// wg/tun, not egress). Swappable for tests.
+	interfaces func() []string
 }
 
 // commandRunner exists so tests can observe the commands without a live kernel.
@@ -92,21 +102,27 @@ const (
 	maxClients = 0xfe
 )
 
-// New returns a Manager shaping traffic on iface.
+// New returns a Manager whose egress interface is iface.
 func New(iface string) *Manager {
-	return &Manager{
-		iface:    iface,
+	m := &Manager{
+		egress:   iface,
 		applied:  map[string]Client{},
 		marks:    map[string]uint32{},
+		ifaceSet: map[string]struct{}{},
 		nextMark: firstMark,
 		runner:   execRunner{},
 		nft:      defaultNFT,
 	}
+	m.interfaces = m.shapingInterfaces
+	return m
 }
 
-// Apply makes the installed shaping match clients exactly: new addresses are
-// shaped, changed ceilings are updated, and addresses no longer present are
-// unshaped. Clients with a zero limit are treated as absent.
+// Apply makes the installed shaping match clients exactly, declaratively: it is
+// safe to run every poll. It reconciles the mark chain and re-asserts the class
+// tree on every current interface — so a client's cap is enforced on both the
+// egress (upload) and the tunnel interface its download leaves by (wg/tun),
+// and interfaces that appear later (an OpenVPN tun once a client connects) are
+// picked up on the next pass. Clients with a zero limit count as absent.
 func (m *Manager) Apply(clients []Client) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -119,63 +135,123 @@ func (m *Manager) Apply(clients []Client) error {
 		wanted[c.Address] = c
 	}
 
-	if len(wanted) > 0 && !m.started {
-		if err := m.setupRoot(); err != nil {
-			return err
-		}
-		m.started = true
-	}
+	ifaces := m.interfaces()
 
-	// Remove first, so a shrinking set frees its marks before new ones allocate.
+	// Drop departed clients' classes/filters from every interface, and free
+	// their marks, before new ones allocate.
 	for addr := range m.applied {
-		if _, keep := wanted[addr]; !keep {
-			m.removeLocked(addr)
+		if _, keep := wanted[addr]; keep {
+			continue
 		}
+		if mark, ok := m.marks[addr]; ok {
+			for _, iface := range m.ifaceList() {
+				for _, dir := range []Direction{Download, Upload} {
+					m.delClass(iface, mark, dir)
+				}
+			}
+			delete(m.marks, addr)
+			m.freed = append(m.freed, mark)
+		}
+		delete(m.applied, addr)
 	}
 
-	// Deterministic order keeps class ids stable across runs, which makes the
-	// installed state easy to compare in tests and in `tc class show`.
+	// Nothing to shape: tear the whole thing down so an idle node is clean.
+	if len(wanted) == 0 {
+		m.teardownAll()
+		return nil
+	}
+
+	// Roots first, on every interface (idempotent replace).
+	var firstErr error
+	setErr := func(e error) {
+		if e != nil && firstErr == nil {
+			firstErr = e
+		}
+	}
+	for _, iface := range ifaces {
+		setErr(m.ensureRoot(iface))
+	}
+
+	// Deterministic order keeps class ids stable across runs.
 	addrs := make([]string, 0, len(wanted))
 	for addr := range wanted {
 		addrs = append(addrs, addr)
 	}
 	sort.Strings(addrs)
 
-	var firstErr error
 	for _, addr := range addrs {
 		c := wanted[addr]
-		if existing, ok := m.applied[addr]; ok {
-			if existing.LimitKbps == c.LimitKbps {
-				continue
-			}
-			if err := m.updateLocked(c); err != nil && firstErr == nil {
-				firstErr = err
-			}
+		mark, err := m.allocMark(addr)
+		if err != nil {
+			setErr(err)
 			continue
 		}
-		if err := m.addLocked(c); err != nil && firstErr == nil {
-			firstErr = err
+		prev, existed := m.applied[addr]
+		for _, iface := range ifaces {
+			for _, dir := range []Direction{Download, Upload} {
+				setErr(m.ensureClass(iface, mark, dir, c.LimitKbps))
+			}
+		}
+		m.applied[addr] = c
+		if !existed {
+			log.Printf("ratelimit: %s (%s) capped at %d kbit/s per direction", c.User, addr, c.LimitKbps)
+		} else if prev.LimitKbps != c.LimitKbps {
+			log.Printf("ratelimit: %s (%s) cap changed to %d kbit/s per direction", c.User, addr, c.LimitKbps)
 		}
 	}
+
+	// Record the interface set so departed clients and Close clean the right
+	// ones even if the interface list changes later.
+	m.ifaceSet = make(map[string]struct{}, len(ifaces))
+	for _, iface := range ifaces {
+		m.ifaceSet[iface] = struct{}{}
+	}
+
+	setErr(m.syncMarks())
 	return firstErr
+}
+
+// ifaceList returns the interfaces the tree was last installed on, unioned with
+// the current set, so cleanup covers both.
+func (m *Manager) ifaceList() []string {
+	seen := map[string]struct{}{}
+	var out []string
+	add := func(i string) {
+		if _, ok := seen[i]; !ok {
+			seen[i] = struct{}{}
+			out = append(out, i)
+		}
+	}
+	for i := range m.ifaceSet {
+		add(i)
+	}
+	for _, i := range m.interfaces() {
+		add(i)
+	}
+	return out
 }
 
 // Close removes every rule and qdisc this manager installed.
 func (m *Manager) Close() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.teardownAll()
+}
 
-	for addr := range m.applied {
-		m.removeLocked(addr)
+func (m *Manager) teardownAll() {
+	for _, iface := range m.ifaceList() {
+		m.delRoot(iface)
 	}
-	if m.started {
-		m.teardownRoot()
-		m.started = false
-	}
+	m.teardownMarks()
+	m.applied = map[string]Client{}
+	m.marks = map[string]uint32{}
+	m.freed = nil
+	m.nextMark = firstMark
+	m.ifaceSet = map[string]struct{}{}
 }
 
 func (m *Manager) String() string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return fmt.Sprintf("ratelimit(iface=%s, clients=%d)", m.iface, len(m.applied))
+	return fmt.Sprintf("ratelimit(egress=%s, clients=%d)", m.egress, len(m.applied))
 }

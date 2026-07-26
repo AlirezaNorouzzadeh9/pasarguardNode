@@ -2,7 +2,6 @@ package ratelimit
 
 import (
 	"fmt"
-	"log"
 	"os/exec"
 	"strings"
 )
@@ -24,9 +23,9 @@ func (execRunner) output(name string, args ...string) (string, error) {
 }
 
 // classID is the tc handle for one (client, direction) pair, derived from the
-// mark so a class is always recoverable from it. The low bits of the mark start
-// at 0, but minor 0 is the root handle (1:0 == 1:), so shift by one: the first
-// client's download class is 1:2, its upload 1:3, and so on.
+// mark so a class is always recoverable from it. Minor 0 is the root handle
+// (1:0 == 1:), so shift by one: the first client's download class is 1:2, its
+// upload 1:3, and so on.
 func classID(mark uint32, dir Direction) string {
 	minor := ((mark & 0xffff) + 1) * 2
 	if dir == Upload {
@@ -35,29 +34,52 @@ func classID(mark uint32, dir Direction) string {
 	return fmt.Sprintf("1:%x", minor)
 }
 
-// setupRoot installs the HTB root and the one filter that maps marks to classes.
-func (m *Manager) setupRoot() error {
-	// A fresh start: drop anything we (or a previous crash) left behind.
-	m.teardownRoot()
-
-	if err := m.runner.run("tc", "qdisc", "add", "dev", m.iface, "root", "handle", "1:", "htb", "default", "1"); err != nil {
-		return fmt.Errorf("install shaping root on %s: %w", m.iface, err)
+// markValue folds the direction into the mark so one fw filter separates the
+// two directions' classes.
+func markValue(mark uint32, dir Direction) uint32 {
+	v := mark
+	if dir == Upload {
+		v |= 0x8000
 	}
-	// Class 1:1 is the default and is left unlimited, so unshaped users and the
-	// node's own traffic are untouched.
-	if err := m.runner.run("tc", "class", "add", "dev", m.iface, "parent", "1:", "classid", "1:1",
-		"htb", "rate", "1000000mbit"); err != nil {
-		return fmt.Errorf("install default class on %s: %w", m.iface, err)
-	}
-	// Per-client fw filters (added with each class) map a packet's mark to its
-	// class; no global filter is needed.
-	return nil
+	return v
 }
 
-func (m *Manager) teardownRoot() {
-	// Ignore errors: there is usually nothing to delete.
-	_ = m.runner.run("tc", "qdisc", "del", "dev", m.iface, "root")
-	m.teardownMarks()
+func commentFor(addr string, dir Direction) string {
+	return fmt.Sprintf("pg_node_rl %s %s", addr, dir)
+}
+
+// ensureRoot makes sure an HTB root and its unlimited default class exist on an
+// interface. `replace` makes this idempotent, so it can run every reconcile and
+// pick up interfaces (e.g. an OpenVPN tun) that appeared after the last pass.
+func (m *Manager) ensureRoot(iface string) error {
+	if err := m.runner.run("tc", "qdisc", "replace", "dev", iface, "root", "handle", "1:", "htb", "default", "1"); err != nil {
+		return fmt.Errorf("install shaping root on %s: %w", iface, err)
+	}
+	// Class 1:1 is the default: unshaped users and the node's own traffic pass
+	// through it uncapped.
+	return m.runner.run("tc", "class", "replace", "dev", iface, "parent", "1:", "classid", "1:1",
+		"htb", "rate", "1000000mbit")
+}
+
+func (m *Manager) ensureClass(iface string, mark uint32, dir Direction, kbps uint32) error {
+	rate := fmt.Sprintf("%dkbit", kbps)
+	if err := m.runner.run("tc", "class", "replace", "dev", iface, "parent", "1:", "classid", classID(mark, dir),
+		"htb", "rate", rate, "ceil", rate); err != nil {
+		return err
+	}
+	// The fw filter maps a packet's mark (set by nft) to this class.
+	return m.runner.run("tc", "filter", "replace", "dev", iface, "parent", "1:", "protocol", "all",
+		"prio", "1", "handle", fmt.Sprintf("%d", markValue(mark, dir)), "fw", "flowid", classID(mark, dir))
+}
+
+func (m *Manager) delClass(iface string, mark uint32, dir Direction) {
+	_ = m.runner.run("tc", "filter", "del", "dev", iface, "parent", "1:", "protocol", "all",
+		"prio", "1", "handle", fmt.Sprintf("%d", markValue(mark, dir)), "fw")
+	_ = m.runner.run("tc", "class", "del", "dev", iface, "classid", classID(mark, dir))
+}
+
+func (m *Manager) delRoot(iface string) {
+	_ = m.runner.run("tc", "qdisc", "del", "dev", iface, "root")
 }
 
 // allocMark hands out a mark, reusing one from a departed client when possible.
@@ -78,101 +100,4 @@ func (m *Manager) allocMark(addr string) (uint32, error) {
 	m.nextMark++
 	m.marks[addr] = mark
 	return mark, nil
-}
-
-func (m *Manager) addLocked(c Client) error {
-	mark, err := m.allocMark(c.Address)
-	if err != nil {
-		return err
-	}
-
-	for _, dir := range []Direction{Download, Upload} {
-		if err := m.addClass(mark, dir, c.LimitKbps); err != nil {
-			return err
-		}
-		// The fw filter maps this mark to the class; the mark itself is set by
-		// the nft chain (see syncMarks).
-		if err := m.addFilter(mark, dir); err != nil {
-			return err
-		}
-	}
-
-	m.applied[c.Address] = c
-	if err := m.syncMarks(); err != nil {
-		return err
-	}
-	log.Printf("ratelimit: %s (%s) capped at %d kbit/s per direction", c.User, c.Address, c.LimitKbps)
-	return nil
-}
-
-func (m *Manager) updateLocked(c Client) error {
-	mark, ok := m.marks[c.Address]
-	if !ok {
-		return m.addLocked(c)
-	}
-	for _, dir := range []Direction{Download, Upload} {
-		if err := m.changeClass(mark, dir, c.LimitKbps); err != nil {
-			return err
-		}
-	}
-	m.applied[c.Address] = c
-	log.Printf("ratelimit: %s (%s) cap changed to %d kbit/s per direction", c.User, c.Address, c.LimitKbps)
-	return nil
-}
-
-func (m *Manager) removeLocked(addr string) {
-	mark, ok := m.marks[addr]
-	if ok {
-		for _, dir := range []Direction{Download, Upload} {
-			m.delFilter(mark, dir)
-			m.delClass(mark, dir)
-		}
-		delete(m.marks, addr)
-		m.freed = append(m.freed, mark)
-	}
-	delete(m.applied, addr)
-	// Rebuild the mark chain so the departed client's rules are gone.
-	_ = m.syncMarks()
-}
-
-func (m *Manager) addClass(mark uint32, dir Direction, kbps uint32) error {
-	rate := fmt.Sprintf("%dkbit", kbps)
-	return m.runner.run("tc", "class", "add", "dev", m.iface, "parent", "1:", "classid", classID(mark, dir),
-		"htb", "rate", rate, "ceil", rate)
-}
-
-func (m *Manager) changeClass(mark uint32, dir Direction, kbps uint32) error {
-	rate := fmt.Sprintf("%dkbit", kbps)
-	return m.runner.run("tc", "class", "change", "dev", m.iface, "parent", "1:", "classid", classID(mark, dir),
-		"htb", "rate", rate, "ceil", rate)
-}
-
-func (m *Manager) delClass(mark uint32, dir Direction) {
-	_ = m.runner.run("tc", "class", "del", "dev", m.iface, "classid", classID(mark, dir))
-}
-
-// markValue folds the direction into the mark so one fw filter can separate the
-// two classes.
-func markValue(mark uint32, dir Direction) uint32 {
-	v := mark
-	if dir == Upload {
-		v |= 0x8000
-	}
-	return v
-}
-
-func commentFor(addr string, dir Direction) string {
-	return fmt.Sprintf("pg_node_rl %s %s", addr, dir)
-}
-
-// addFilter installs the tc fw filter mapping a packet's mark to its class. The
-// mark itself is set by the nft chain in syncMarks.
-func (m *Manager) addFilter(mark uint32, dir Direction) error {
-	return m.runner.run("tc", "filter", "add", "dev", m.iface, "parent", "1:", "protocol", "all",
-		"prio", "1", "handle", fmt.Sprintf("%d", markValue(mark, dir)), "fw", "flowid", classID(mark, dir))
-}
-
-func (m *Manager) delFilter(mark uint32, dir Direction) {
-	_ = m.runner.run("tc", "filter", "del", "dev", m.iface, "parent", "1:", "protocol", "all",
-		"prio", "1", "handle", fmt.Sprintf("%d", markValue(mark, dir)), "fw")
 }
