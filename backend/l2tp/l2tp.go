@@ -58,6 +58,12 @@ type L2TP struct {
 	interfaceStats *stats.InterfaceCountersTracker
 	totalRx        int64
 	totalTx        int64
+	// per-PPP-interface last-seen byte counters, to accumulate deltas across
+	// session churn (a ppp<N> interface goes away when its device disconnects).
+	ifSeen map[string][2]int64
+	// per-user cumulative byte counters fed to the stats tracker.
+	cumRx map[string]int64
+	cumTx map[string]int64
 	// onlineIPs is the last poll's snapshot of distinct client IPs per user.
 	onlineIPs map[string]map[string]int64
 
@@ -93,6 +99,9 @@ func New(cfg *config.Config, l2Config *Config, users []*common.User) (*L2TP, err
 		users:          newUserStore(l2Config.InboundTag),
 		statsTracker:   stats.New(),
 		interfaceStats: stats.NewInterfaceCountersTracker(),
+		ifSeen:         make(map[string][2]int64),
+		cumRx:          make(map[string]int64),
+		cumTx:          make(map[string]int64),
 		onlineIPs:      make(map[string]map[string]int64),
 		waitDone:       make(chan struct{}),
 		logChan:        make(chan string, cfg.LogBufferSize),

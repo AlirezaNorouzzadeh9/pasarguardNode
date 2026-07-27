@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"runtime"
+	"sort"
 	"time"
 
 	"github.com/pasarguard/node/common"
@@ -23,14 +24,101 @@ func (o *L2TP) pollLoop(ctx context.Context) {
 	}
 }
 
-// poll refreshes per-user accounting and the online-IP snapshot.
-//
-// TODO(live): L2TP accounting is collected per pppd session (one ppp<N>
-// interface per client). Wiring it up needs a pppd ip-up/ip-down hook that maps
-// the interface to the authenticated username; that is layered in once the
-// tunnel itself is confirmed working on a real node, mirroring how IKEv2's
-// limits were added after its connection path was proven.
-func (o *L2TP) poll() {}
+// poll attributes each live PPP session's interface counters to its user,
+// accumulates traffic across session churn, refreshes the online snapshot and
+// enforces the per-user device limit. Sessions come from the pppd ip-up hook
+// (interface -> username); byte counters from the interface statistics.
+func (o *L2TP) poll() {
+	sessions := readSessions()
+	perUser := make(map[string][]l2tpSession)
+	present := make(map[string]struct{})
+	for _, s := range sessions {
+		perUser[s.user] = append(perUser[s.user], s)
+		present[s.ifname] = struct{}{}
+	}
+
+	var samples []stats.Sample
+
+	o.mu.Lock()
+	growthRx := make(map[string]int64)
+	growthTx := make(map[string]int64)
+	for _, s := range sessions {
+		rx, tx := ifaceBytes(s.ifname)
+		last := o.ifSeen[s.ifname]
+		dRx, dTx := rx-last[0], tx-last[1]
+		if dRx < 0 {
+			dRx = rx
+		}
+		if dTx < 0 {
+			dTx = tx
+		}
+		o.ifSeen[s.ifname] = [2]int64{rx, tx}
+		growthRx[s.user] += dRx
+		growthTx[s.user] += dTx
+	}
+	// Forget interfaces whose session has ended (their final bytes are counted).
+	for ifn := range o.ifSeen {
+		if _, ok := present[ifn]; !ok {
+			delete(o.ifSeen, ifn)
+		}
+	}
+	now := time.Now().Unix()
+	onlineIPs := make(map[string]map[string]int64, len(perUser))
+	for user, list := range perUser {
+		o.cumRx[user] += growthRx[user]
+		o.cumTx[user] += growthTx[user]
+		o.totalRx += growthRx[user]
+		o.totalTx += growthTx[user]
+		ips := make(map[string]int64, len(list))
+		endpoint := ""
+		for _, s := range list {
+			ip := s.clientIP
+			if ip == "" {
+				ip = s.tunnelIP
+			}
+			if ip != "" {
+				ips[ip] = now
+				if endpoint == "" {
+					endpoint = ip
+				}
+			}
+		}
+		onlineIPs[user] = ips
+		samples = append(samples, stats.Sample{
+			PublicKey:  user,
+			Email:      user,
+			Rx:         o.cumRx[user],
+			Tx:         o.cumTx[user],
+			EndpointIP: endpoint,
+		})
+	}
+	o.onlineIPs = onlineIPs
+	o.mu.Unlock()
+
+	if len(samples) > 0 {
+		o.statsTracker.UpdateStatsBatch(samples)
+	}
+	o.enforceDeviceLimits(perUser)
+}
+
+// enforceDeviceLimits disconnects the excess sessions of any user running more
+// simultaneous devices than their ip_limit. The oldest sessions are kept so the
+// same devices stay connected across polls.
+func (o *L2TP) enforceDeviceLimits(perUser map[string][]l2tpSession) {
+	for user, list := range perUser {
+		limit := o.users.limitFor(user)
+		if limit == 0 || uint32(len(list)) <= limit {
+			continue
+		}
+		sort.Slice(list, func(i, j int) bool { return list[i].started < list[j].started })
+		for _, s := range list[limit:] {
+			if s.pid > 0 && terminateSession(s.pid) {
+				o.emitLogf("Info", "l2tp: user %s over device limit (%d > %d), disconnecting %s",
+					user, len(list), limit, s.ifname)
+			}
+		}
+	}
+}
 
 func (o *L2TP) GetStats(ctx context.Context, request *common.StatRequest) (*common.StatResponse, error) {
 	o.mu.RLock()

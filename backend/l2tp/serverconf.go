@@ -50,7 +50,51 @@ func (o *L2TP) writeConfig() error {
 	if err := o.writePPPOptions(); err != nil {
 		return err
 	}
+	if err := writeIPScripts(); err != nil {
+		return err
+	}
 	return o.writeChapSecrets()
+}
+
+// writeIPScripts installs the pppd ip-up/ip-down hooks that record one file per
+// live PPP session (interface -> username + tunnel IP + pid). pppd runs every
+// executable in these directories when a session comes up or goes down, so the
+// Go poll loop can attribute per-interface traffic to a user and enforce limits.
+func writeIPScripts() error {
+	up := "#!/bin/sh\n" +
+		"# PasarGuard L2TP session accounting hook (managed; do not edit).\n" +
+		"IF=\"${IFNAME:-$PPP_IFACE}\"\n" +
+		"REMOTE=\"${IPREMOTE:-$PPP_REMOTE}\"\n" +
+		"[ -n \"$PEERNAME\" ] || exit 0\n" +
+		"[ -n \"$IF\" ] || exit 0\n" +
+		"d=" + sessionStateDir + "\n" +
+		"mkdir -p \"$d\"; umask 077\n" +
+		"{\n" +
+		"  echo \"user=$PEERNAME\"\n" +
+		"  echo \"tunnel_ip=$REMOTE\"\n" +
+		"  echo \"pid=${PPPD_PID:-0}\"\n" +
+		"  echo \"started=$(date +%s)\"\n" +
+		"} > \"$d/$IF\"\n"
+
+	down := "#!/bin/sh\n" +
+		"# PasarGuard L2TP session accounting hook (managed; do not edit).\n" +
+		"IF=\"${IFNAME:-$PPP_IFACE}\"\n" +
+		"[ -n \"$IF\" ] && rm -f " + sessionStateDir + "/\"$IF\"\n" +
+		"exit 0\n"
+
+	scripts := map[string]string{
+		"/etc/ppp/ip-up.d/pg-l2tp":   up,
+		"/etc/ppp/ip-down.d/pg-l2tp": down,
+	}
+	for path, content := range scripts {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			return err
+		}
+		if err := os.WriteFile(path, []byte(content), 0o755); err != nil {
+			return err
+		}
+	}
+	return os.MkdirAll(sessionStateDir, 0o700)
 }
 
 // writeSwanctl writes the IKEv1 transport-mode PSK connection that terminates
