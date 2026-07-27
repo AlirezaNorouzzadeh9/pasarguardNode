@@ -28,6 +28,7 @@ const (
 	BackendType_WIREGUARD BackendType = 1
 	BackendType_OPENVPN   BackendType = 2
 	BackendType_IKEV2     BackendType = 3
+	BackendType_L2TP      BackendType = 4
 )
 
 // Enum value maps for BackendType.
@@ -37,12 +38,14 @@ var (
 		1: "WIREGUARD",
 		2: "OPENVPN",
 		3: "IKEV2",
+		4: "L2TP",
 	}
 	BackendType_value = map[string]int32{
 		"XRAY":      0,
 		"WIREGUARD": 1,
 		"OPENVPN":   2,
 		"IKEV2":     3,
+		"L2TP":      4,
 	}
 )
 

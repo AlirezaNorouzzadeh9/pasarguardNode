@@ -15,6 +15,7 @@ import (
 
 	"github.com/pasarguard/node/backend"
 	"github.com/pasarguard/node/backend/ikev2"
+	"github.com/pasarguard/node/backend/l2tp"
 	"github.com/pasarguard/node/backend/openvpn"
 	"github.com/pasarguard/node/backend/ratelimit"
 	"github.com/pasarguard/node/backend/wireguard"
@@ -146,6 +147,7 @@ func backendDisabled(t common.BackendType) bool {
 		common.BackendType_OPENVPN:   {"PG_NODE_DISABLE_OPENVPN"},
 		common.BackendType_WIREGUARD: {"PG_NODE_DISABLE_WIREGUARD", "PG_NODE_DISABLE_WG"},
 		common.BackendType_IKEV2:     {"PG_NODE_DISABLE_IKEV2"},
+		common.BackendType_L2TP:      {"PG_NODE_DISABLE_L2TP"},
 	}
 	for _, n := range names[t] {
 		switch strings.ToLower(strings.TrimSpace(os.Getenv(n))) {
@@ -242,6 +244,19 @@ func (c *Controller) StartBackend(ctx context.Context, backendCfg *common.Backen
 			return err
 		}
 		newBackend, err = ikev2.New(c.cfg, config, backendCfg.GetUsers())
+		if err != nil {
+			return err
+		}
+
+	case common.BackendType_L2TP:
+		if err := l2tp.CheckDeps(); err != nil {
+			return err
+		}
+		config, err := l2tp.NewConfig(backendCfg.GetConfig())
+		if err != nil {
+			return err
+		}
+		newBackend, err = l2tp.New(c.cfg, config, backendCfg.GetUsers())
 		if err != nil {
 			return err
 		}
@@ -376,7 +391,7 @@ func (c *Controller) SystemStats(ctx context.Context) *common.SystemStatsRespons
 func backendInstanceID(t common.BackendType, configStr string) string {
 	var field string
 	switch t {
-	case common.BackendType_OPENVPN, common.BackendType_IKEV2:
+	case common.BackendType_OPENVPN, common.BackendType_IKEV2, common.BackendType_L2TP:
 		field = "inbound_tag"
 	case common.BackendType_WIREGUARD:
 		field = "interface_name"
@@ -404,6 +419,8 @@ func backendTypeKey(t common.BackendType) string {
 		return "wg"
 	case common.BackendType_IKEV2:
 		return "ikev2"
+	case common.BackendType_L2TP:
+		return "l2tp"
 	default:
 		return t.String()
 	}
@@ -488,6 +505,10 @@ func (c *Controller) capabilities() ([]common.BackendType, map[string]string) {
 		if !backendDisabled(common.BackendType_IKEV2) && ikev2.CheckDeps() == nil {
 			avail = append(avail, common.BackendType_IKEV2)
 			versions["ikev2"] = ikev2.DetectVersion()
+		}
+		if !backendDisabled(common.BackendType_L2TP) && l2tp.CheckDeps() == nil {
+			avail = append(avail, common.BackendType_L2TP)
+			versions["l2tp"] = l2tp.DetectVersion()
 		}
 		c.capsAvail = avail
 		c.capsVersions = versions
