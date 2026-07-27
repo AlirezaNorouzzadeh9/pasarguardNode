@@ -18,8 +18,6 @@ func (o *IKEv2) pollLoop(ctx context.Context) {
 		select {
 		case <-ctx.Done():
 			return
-		case <-o.waitDone:
-			return
 		case <-ticker.C:
 			o.poll()
 		}
