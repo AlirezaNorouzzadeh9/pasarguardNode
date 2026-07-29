@@ -23,6 +23,7 @@ enum BackendType {
   WIREGUARD = 1;
   OPENVPN = 2;
   IKEV2 = 3;
+  L2TP = 4;
 }
 
 message Backend {

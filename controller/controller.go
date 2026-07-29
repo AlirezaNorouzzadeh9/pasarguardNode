@@ -94,6 +94,7 @@ func (c *Controller) Connect(ip string, keepAlive uint64) {
 	ctx, cancel := context.WithCancel(context.Background())
 	c.cancelFunc = cancel
 	go c.recordSystemStats(ctx)
+	go c.enforceGlobalLimits(ctx)
 	if keepAlive > 0 {
 		go c.keepAliveTracker(ctx, time.Duration(keepAlive)*time.Second)
 	}
@@ -288,6 +289,31 @@ func (c *Controller) Backend() backend.Backend {
 		return nil
 	}
 	return composite
+}
+
+// enforceGlobalLimits periodically applies each user's ip_limit across every
+// protocol on the node. Per-backend enforcement only counts a user's devices
+// within one protocol, so a user at ip_limit 1 could still be online via ikev2
+// and l2tp at once; this pass sheds that cross-protocol excess by priority.
+func (c *Controller) enforceGlobalLimits(ctx context.Context) {
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			c.mu.RLock()
+			limiters := make([]backend.DeviceLimiter, 0, len(c.backends))
+			for _, b := range c.backends {
+				if dl, ok := b.(backend.DeviceLimiter); ok {
+					limiters = append(limiters, dl)
+				}
+			}
+			c.mu.RUnlock()
+			backend.EnforceGlobalDeviceLimits(limiters)
+		}
+	}
 }
 
 func (c *Controller) keepAliveTracker(ctx context.Context, keepAlive time.Duration) {

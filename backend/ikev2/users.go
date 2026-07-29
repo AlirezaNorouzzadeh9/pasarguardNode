@@ -105,6 +105,15 @@ func (s *userStore) limitFor(username string) uint32 {
 	return s.users[username].ipLimit
 }
 
+// limitKnown returns the user's device limit and whether this backend serves the
+// user at all, so the cross-protocol limiter can skip users it does not own.
+func (s *userStore) limitKnown(username string) (uint32, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	e, ok := s.users[username]
+	return e.ipLimit, ok
+}
+
 // speedLimitFor returns the per-direction cap for a user (0 = unlimited).
 func (s *userStore) speedLimitFor(username string) uint32 {
 	s.mu.RLock()
