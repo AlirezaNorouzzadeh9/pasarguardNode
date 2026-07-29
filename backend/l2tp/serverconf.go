@@ -123,7 +123,10 @@ func (o *L2TP) writeSwanctl() error {
 	fmt.Fprintf(&b, "            %s-l2tp {\n", tag)
 	fmt.Fprintf(&b, "                esp_proposals = %s\n", esp)
 	fmt.Fprintf(&b, "                local_ts = dynamic[udp/l2tp]\n")
-	fmt.Fprintf(&b, "                remote_ts = dynamic[udp/l2tp]\n")
+	// remote_ts must accept ANY client UDP port: clients behind NAT have their
+	// L2TP source port (1701) rewritten by the NAT, so pinning it to udp/1701
+	// makes charon reject QUICK_MODE ("no matching CHILD_SA config found").
+	fmt.Fprintf(&b, "                remote_ts = dynamic[udp]\n")
 	fmt.Fprintf(&b, "                mode = transport\n")
 	fmt.Fprintf(&b, "                rekey_time = 0\n")
 	fmt.Fprintf(&b, "                dpd_action = clear\n")
@@ -179,6 +182,12 @@ func (o *L2TP) writePPPOptions() error {
 	fmt.Fprintf(&b, "mtu 1400\n")
 	fmt.Fprintf(&b, "mru 1400\n")
 	fmt.Fprintf(&b, "noccp\n")
+	// Disable IPv6CP and Van Jacobson compression: some clients (notably iOS
+	// behind carrier NAT) never complete IPCP otherwise ("No network protocols
+	// running"), because the extra control protocols stall the negotiation.
+	fmt.Fprintf(&b, "noipv6\n")
+	fmt.Fprintf(&b, "novj\n")
+	fmt.Fprintf(&b, "novjccomp\n")
 	fmt.Fprintf(&b, "connect-delay 5000\n")
 	return os.WriteFile(o.pppOptionsPath(), []byte(b.String()), 0o600)
 }
