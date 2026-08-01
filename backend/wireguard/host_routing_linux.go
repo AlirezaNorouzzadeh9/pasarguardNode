@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/pasarguard/node/backend/egress"
+	"github.com/pasarguard/node/backend/hostroute"
 	"log"
 	"os"
 	"os/exec"
@@ -88,6 +89,19 @@ func applyLinuxHostRouting(wgInterfaceName, egressIface, subnet string) func() {
 		log.Printf("wireguard host routing: nftables forward rules failed: %v", err)
 	}
 
+	// Peers size their TCP segments from the MTU in their own .conf, which knows
+	// nothing about a relay tunnel in front of this node. Without a clamp the
+	// handshake succeeds and small traffic flows — Telegram works — while every
+	// TLS handshake to a website stalls.
+	if mss, err := hostroute.EnsureMSSClampForInterface(wgIf, ownerID); err != nil {
+		log.Printf("wireguard host routing: MSS clamp for %q failed: %v", wgIf, err)
+	} else if mss > 0 {
+		log.Printf("wireguard host routing: MSS clamp for %q set to %d", wgIf, mss)
+	}
+	stopMSS := hostroute.StartMSSRefresherForInterface(wgIf, ownerID, func(format string, args ...any) {
+		log.Printf("wireguard host routing: "+format, args...)
+	})
+
 	// Per-core egress: steer this subnet's traffic out the chosen interface.
 	egressCleanup, err := egress.Apply(subnet, egressIface)
 	if err != nil {
@@ -95,6 +109,12 @@ func applyLinuxHostRouting(wgInterfaceName, egressIface, subnet string) func() {
 	}
 
 	return func() {
+		if stopMSS != nil {
+			stopMSS()
+		}
+		if err := hostroute.RemoveMSSClamp(ownerID); err != nil {
+			log.Printf("wireguard host routing: MSS clamp cleanup failed: %v", err)
+		}
 		if egressCleanup != nil {
 			egressCleanup()
 		}

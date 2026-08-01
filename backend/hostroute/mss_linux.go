@@ -96,11 +96,58 @@ func EnsureMSSClampForSubnet(subnet, ownerID string) (int, error) {
 	return mss, nil
 }
 
+// EnsureMSSClampForInterface is the WireGuard-shaped variant: its clients are
+// identified by the tunnel interface rather than a subnet, and its peer pool is
+// usually a wide range that would overlap the other backends' subnets.
+func EnsureMSSClampForInterface(iface, ownerID string) (int, error) {
+	iface = strings.TrimSpace(iface)
+	if iface == "" {
+		return 0, fmt.Errorf("empty interface")
+	}
+	mss, err := PathMSS()
+	if err != nil {
+		return 0, err
+	}
+
+	appliedMu.Lock()
+	defer appliedMu.Unlock()
+	if appliedMSS[ownerID] == mss && mssChainExists() {
+		return mss, nil
+	}
+
+	if err := ensureMSSChain(); err != nil {
+		return 0, err
+	}
+	if err := removeMSSRules(ownerID); err != nil {
+		return 0, err
+	}
+	for _, inbound := range []bool{true, false} {
+		if err := addMSSIfaceRule(iface, ownerID, mss, inbound); err != nil {
+			return 0, err
+		}
+	}
+	appliedMSS[ownerID] = mss
+	return mss, nil
+}
+
 // StartMSSRefresher keeps the clamp in step with the live interface MTUs: a
 // relay tunnel can come back up with a different MTU long after the backend
 // started, and a stale clamp is exactly as broken as no clamp. logf is called
 // only when the value actually changes. The returned func stops the refresher.
 func StartMSSRefresher(subnet, ownerID string, logf func(format string, args ...any)) func() {
+	return startRefresher(ownerID, logf, func() (int, error) {
+		return EnsureMSSClampForSubnet(subnet, ownerID)
+	}, subnet)
+}
+
+// StartMSSRefresherForInterface is the interface-matched counterpart.
+func StartMSSRefresherForInterface(iface, ownerID string, logf func(format string, args ...any)) func() {
+	return startRefresher(ownerID, logf, func() (int, error) {
+		return EnsureMSSClampForInterface(iface, ownerID)
+	}, iface)
+}
+
+func startRefresher(ownerID string, logf func(format string, args ...any), apply func() (int, error), target string) func() {
 	done := make(chan struct{})
 	go func() {
 		ticker := time.NewTicker(MSSRefreshInterval)
@@ -114,12 +161,12 @@ func StartMSSRefresher(subnet, ownerID string, logf func(format string, args ...
 			case <-done:
 				return
 			case <-ticker.C:
-				mss, err := EnsureMSSClampForSubnet(subnet, ownerID)
+				mss, err := apply()
 				if err != nil {
 					continue
 				}
 				if mss != last && logf != nil {
-					logf("MSS clamp for %s updated %d -> %d (path MTU changed)", subnet, last, mss)
+					logf("MSS clamp for %s updated %d -> %d (path MTU changed)", target, last, mss)
 				}
 				last = mss
 			}
@@ -222,6 +269,21 @@ func addMSSRule(subnet, ownerID string, mss int, saddr bool) error {
 		"tcp", "flags", "syn", "/", "syn,rst",
 		"tcp", "option", "maxseg", "size", "set", fmt.Sprint(mss),
 		"comment", quote(fmt.Sprintf("%sowner=%s subnet=%s direction=%s mss=%d", mssCommentPrefix, ownerID, subnet, dir, mss)),
+	)
+}
+
+func addMSSIfaceRule(iface, ownerID string, mss int, inbound bool) error {
+	match := "oifname"
+	dir := "to-client"
+	if inbound {
+		match, dir = "iifname", "from-client"
+	}
+	return runNFT(
+		"add", "rule", "ip", mssTable, mssChain,
+		match, quote(iface),
+		"tcp", "flags", "syn", "/", "syn,rst",
+		"tcp", "option", "maxseg", "size", "set", fmt.Sprint(mss),
+		"comment", quote(fmt.Sprintf("%sowner=%s iface=%s direction=%s mss=%d", mssCommentPrefix, ownerID, iface, dir, mss)),
 	)
 }
 
