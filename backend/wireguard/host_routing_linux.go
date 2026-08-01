@@ -255,6 +255,13 @@ func parseNFTForwardBaseChains(data []byte) ([]nftBaseChain, error) {
 		if chain.Hook != nftForwardChain || !nftForwardFamilySupported(chain.Family) {
 			continue
 		}
+		// The MSS clamp chain is hooked to forward as well. Inserting an accept
+		// into it ends that chain before the clamp rule runs, which leaves
+		// WireGuard peers unclamped: the tunnel comes up, small traffic flows —
+		// Telegram works — and every TLS handshake to a website stalls.
+		if chain.Table == hostroute.MSSTable {
+			continue
+		}
 		chains = append(chains, nftBaseChain{
 			family: chain.Family,
 			table:  chain.Table,

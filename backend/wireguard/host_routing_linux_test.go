@@ -5,6 +5,8 @@ package wireguard
 import (
 	"strings"
 	"testing"
+
+	"github.com/pasarguard/node/backend/hostroute"
 )
 
 func TestNFTMasqueradeRule(t *testing.T) {
@@ -144,3 +146,29 @@ func TestSanitizeNFTOwnerPart(t *testing.T) {
 type staticError string
 
 func (e staticError) Error() string { return string(e) }
+
+// The MSS clamp chain is hooked to forward too, so this enumerator would
+// happily prepend an accept into it — and an accept ends its chain, leaving
+// peers unclamped. That presents as "the tunnel connects, Telegram works, no
+// website loads", which is a miserable thing to trace back to a rule order.
+func TestParseNFTForwardBaseChainsSkipsMSSClampTable(t *testing.T) {
+	ruleset := []byte(`{
+		"nftables": [
+			{"chain": {"family": "ip", "table": "filter", "name": "FORWARD", "hook": "forward"}},
+			{"chain": {"family": "ip", "table": "` + hostroute.MSSTable + `", "name": "clamp", "hook": "forward"}}
+		]
+	}`)
+
+	chains, err := parseNFTForwardBaseChains(ruleset)
+	if err != nil {
+		t.Fatalf("parseNFTForwardBaseChains: %v", err)
+	}
+	for _, c := range chains {
+		if c.table == hostroute.MSSTable {
+			t.Fatalf("accept rules must never be installed into the clamp chain %s/%s", c.table, c.name)
+		}
+	}
+	if len(chains) != 1 || chains[0].table != "filter" {
+		t.Fatalf("expected only the filter FORWARD chain, got %+v", chains)
+	}
+}

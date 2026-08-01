@@ -31,6 +31,10 @@ import (
 	"time"
 )
 
+// MSSTable is exported so other packages that install their own forward rules
+// can skip it: an accept landing in this chain would shadow the clamp.
+const MSSTable = mssTable
+
 const (
 	mssTable         = "pg_node_mss"
 	mssChain         = "clamp"
