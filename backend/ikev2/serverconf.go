@@ -82,6 +82,12 @@ func (o *IKEv2) writeSwanctl() error {
 	fmt.Fprintf(&b, "        fragmentation = yes\n")
 	fmt.Fprintf(&b, "        pools = %s-pool\n", tag)
 	fmt.Fprintf(&b, "        send_cert = always\n")
+	// Clients authenticate with EAP, so asking them for a certificate buys
+	// nothing — and it is expensive: Android answers a CERTREQ with the hashes
+	// of every CA in its trust store, a ~3 KB IKE_AUTH that has to be split
+	// into fragments. On constrained paths (relays, mobile carriers) the large
+	// fragments are dropped and the handshake never completes.
+	fmt.Fprintf(&b, "        send_certreq = no\n")
 	fmt.Fprintf(&b, "        local {\n")
 	fmt.Fprintf(&b, "            auth = pubkey\n")
 	fmt.Fprintf(&b, "            certs = %s\n", o.certFileName())

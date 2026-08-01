@@ -10,9 +10,17 @@ import (
 )
 
 const (
-	// Distinct endpoint IPs seen within this window count as "simultaneous".
-	// WireGuard peers roam (one endpoint at a time), so this is an approximation.
+	// How long an endpoint is remembered at all. WireGuard keeps a single
+	// endpoint per peer, so two devices sharing a key show up as the endpoint
+	// flipping between them rather than as two entries in one poll.
 	wgIPWindow = 120 * time.Second
+	// Only endpoints seen this recently are counted as simultaneous devices.
+	// This is what separates two real devices from one that changed its NAT
+	// port: devices sharing a key overwrite each other every few seconds, so
+	// both stay fresh, while the port a single device abandoned goes stale and
+	// drops out instead of counting against the user forever. Kept at a few
+	// poll intervals (polls run every 10s by default).
+	wgDeviceRecency = 40 * time.Second
 	// How long an over-limit peer stays removed before being re-admitted.
 	wgIPLimitCooldown = 60 * time.Second
 	// Consecutive over-limit polls required before disconnecting, so a device
@@ -82,6 +90,18 @@ func (wg *WireGuard) ShapedClients() []ratelimit.Client {
 	return clients
 }
 
+// countRecent counts the endpoints still fresh enough to be a device that is
+// connected right now, rather than one this user has merely used lately.
+func countRecent(window map[string]time.Time, now time.Time) int {
+	n := 0
+	for _, seen := range window {
+		if now.Sub(seen) <= wgDeviceRecency {
+			n++
+		}
+	}
+	return n
+}
+
 type wgLimitAction struct {
 	kick    bool
 	readmit bool
@@ -133,7 +153,7 @@ func (wg *WireGuard) enforceIpLimits(mgr *Manager, activeIPs map[string]map[stri
 		if limit == 0 {
 			continue
 		}
-		count := len(wg.ipWindow[email])
+		count := countRecent(wg.ipWindow[email], now)
 		if uint32(count) > limit {
 			wg.overStrikes[email]++
 			if wg.overStrikes[email] >= wgIPLimitStrikes {

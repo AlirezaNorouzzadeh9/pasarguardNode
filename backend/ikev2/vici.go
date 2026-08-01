@@ -139,9 +139,21 @@ type saInfo struct {
 	IKEID      uint32
 	Identity   string   // remote EAP identity = username
 	Remote     string   // remote host (client IP)
+	RemotePort string   // client's source port, which survives NAT
 	VirtualIPs []string // addresses assigned to the client from the pool
 	BytesIn    int64
 	BytesOut   int64
+}
+
+// Device is what the per-user limit counts. The port matters because clients
+// reaching this node through a relay all arrive from one address: counting bare
+// IPs would collapse every device a user owns into one and the limit would
+// never fire. Each device keeps its own NAT source port for the life of its SA.
+func (s saInfo) Device() string {
+	if s.RemotePort == "" {
+		return s.Remote
+	}
+	return s.Remote + ":" + s.RemotePort
 }
 
 // listSAs streams active IKE SAs and returns per-SA accounting info.
@@ -165,9 +177,10 @@ func (v *viciSession) listSAs() ([]saInfo, error) {
 				continue
 			}
 			info := saInfo{
-				Identity: msgString(ike, "remote-eap-id"),
-				Remote:   msgString(ike, "remote-host"),
-				IKEID:    uint32(parseInt64(msgString(ike, "uniqueid"))),
+				Identity:   msgString(ike, "remote-eap-id"),
+				Remote:     msgString(ike, "remote-host"),
+				RemotePort: msgString(ike, "remote-port"),
+				IKEID:      uint32(parseInt64(msgString(ike, "uniqueid"))),
 			}
 			// EAP-MSCHAPv2 SAs frequently omit remote-eap-id; the client sends its
 			// username (= user id) as the IKE identity instead, so fall back to

@@ -112,23 +112,26 @@ func (o *IKEv2) enforceDeviceLimits(perIdentity map[string][]saInfo) {
 		if limit == 0 {
 			continue
 		}
-		byIP := make(map[string][]saInfo)
+		// Group by device rather than by address: behind a relay every client
+		// shares one IP, so counting addresses would see any number of devices
+		// as one and the limit would never fire.
+		byDevice := make(map[string][]saInfo)
 		for _, sa := range saList {
-			byIP[sa.Remote] = append(byIP[sa.Remote], sa)
+			byDevice[sa.Device()] = append(byDevice[sa.Device()], sa)
 		}
-		if uint32(len(byIP)) <= limit {
+		if uint32(len(byDevice)) <= limit {
 			continue
 		}
-		ips := make([]string, 0, len(byIP))
-		for ip := range byIP {
-			ips = append(ips, ip)
+		devices := make([]string, 0, len(byDevice))
+		for device := range byDevice {
+			devices = append(devices, device)
 		}
-		sort.Strings(ips)
-		for _, ip := range ips[limit:] {
-			for _, sa := range byIP[ip] {
+		sort.Strings(devices)
+		for _, device := range devices[limit:] {
+			for _, sa := range byDevice[device] {
 				if err := o.vici.terminateIKE(sa.IKEID); err == nil {
-					o.emitLogf("Info", "ikev2: user %s over device limit (%d IPs > %d), terminating SA %d from %s",
-						identity, len(byIP), limit, sa.IKEID, ip)
+					o.emitLogf("Info", "ikev2: user %s over device limit (%d devices > %d), terminating SA %d from %s",
+						identity, len(byDevice), limit, sa.IKEID, device)
 				}
 			}
 		}
