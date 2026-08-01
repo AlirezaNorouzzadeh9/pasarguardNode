@@ -66,3 +66,25 @@ func TestMSSChainRunsBeforeForwardAccepts(t *testing.T) {
 		t.Fatal("clamp and forward rules must use distinct owner comments")
 	}
 }
+
+// The clamp chain is itself hooked to forward, so the accept-rule installer
+// would happily prepend an accept into it and kill the clamp. It has to skip
+// our own table.
+func TestForwardBaseChainsSkipMSSTable(t *testing.T) {
+	ruleset := []byte(`{"nftables":[
+        {"chain":{"family":"ip","table":"filter","name":"FORWARD","hook":"forward"}},
+        {"chain":{"family":"ip","table":"` + mssTable + `","name":"` + mssChain + `","hook":"forward"}}
+    ]}`)
+	chains, err := parseForwardBaseChains(ruleset)
+	if err != nil {
+		t.Fatalf("parseForwardBaseChains: %v", err)
+	}
+	for _, c := range chains {
+		if c.table == mssTable {
+			t.Fatalf("accept rules must never be installed into the clamp chain %s/%s", c.table, c.name)
+		}
+	}
+	if len(chains) != 1 || chains[0].table != "filter" {
+		t.Fatalf("expected only the filter FORWARD chain, got %+v", chains)
+	}
+}

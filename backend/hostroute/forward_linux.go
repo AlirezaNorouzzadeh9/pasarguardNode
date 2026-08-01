@@ -147,6 +147,12 @@ func parseForwardBaseChains(data []byte) ([]baseChain, error) {
 		if c.Hook != "forward" || (c.Family != "ip" && c.Family != "inet") {
 			continue
 		}
+		// Our own MSS chain is hooked to forward too. Inserting an accept into
+		// it would terminate that chain before the clamp rule runs, silently
+		// undoing the clamp — the exact failure this package exists to avoid.
+		if c.Table == mssTable {
+			continue
+		}
 		chains = append(chains, baseChain{family: c.Family, table: c.Table, name: c.Name})
 	}
 	return chains, nil
