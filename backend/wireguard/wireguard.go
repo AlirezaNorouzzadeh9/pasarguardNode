@@ -222,9 +222,20 @@ func newWithManagerFactory(cfg *config.Config, wgConfig *Config, users []*common
 	psk, _ := wgConfig.GetPreSharedKey()
 	startupPeerConfigs, appliedKeys := buildTargetPeerConfigs(startupDiff.TargetPeers, psk)
 
+	if err := wgConfig.Amnezia.Validate(); err != nil {
+		return nil, err
+	}
+
 	manager, err := wg.newManager(wgConfig.InterfaceName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create manager: %w", err)
+	}
+	// The obfuscation settings live on the manager because it owns the
+	// interface: with them the tunnel is a userspace AmneziaWG device, without
+	// them it is the kernel WireGuard link it has always been.
+	manager.amnezia = wgConfig.Amnezia
+	if wgConfig.Amnezia.Enabled() {
+		log.Printf("wireguard: interface %q runs as AmneziaWG (obfuscated)", wgConfig.InterfaceName)
 	}
 
 	// Initialize the WireGuard interface with peers in the same kernel configure call.

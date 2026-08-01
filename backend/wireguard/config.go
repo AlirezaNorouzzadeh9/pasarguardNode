@@ -20,6 +20,9 @@ type Config struct {
 	Address         []string       `json:"address"`
 	EgressInterface string         `json:"egress_interface"`
 	Latency         *LatencyConfig `json:"latency,omitempty"`
+	// Amnezia turns this core into an AmneziaWG interface. Absent means plain
+	// WireGuard, exactly as before.
+	Amnezia *AmneziaConfig `json:"amnezia,omitempty"`
 
 	privateKeyValue   wgtypes.Key
 	privateKeySet     bool

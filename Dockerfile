@@ -14,6 +14,17 @@ COPY . .
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} make NAME=main build
 RUN GOOS=${TARGETOS} GOARCH=${TARGETARCH} make install_xray
 
+# AmneziaWG: plain WireGuard has a fixed handshake size and fixed header bytes,
+# so DPI blocks it with a single rule. amneziawg-go is the userspace
+# implementation that pads and randomises those, and it speaks the same control
+# protocol as the kernel module, so the node drives it with the code it already
+# has. Built from source because there are no official static releases.
+RUN apk add --no-cache git && \
+    git clone --depth 1 https://github.com/amnezia-vpn/amneziawg-go /tmp/awg && \
+    cd /tmp/awg && \
+    CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath -o /usr/local/bin/amneziawg-go . && \
+    rm -rf /tmp/awg
+
 # Runtime is Debian (not Alpine) so the multi-backend fork's VPN deps —
 # strongSwan/charon for IKEv2 and openvpn — match the packages the bare-metal
 # installer uses and are known to work (EAP-MSCHAPv2 plugins included).
@@ -45,7 +56,7 @@ RUN printf '#!/bin/sh\nexit 101\n' > /usr/sbin/policy-rc.d && chmod +x /usr/sbin
 #           kept working, which made it look like a wireguard-only problem).
 #   plugins - EAP-MSCHAPv2 needs openssl for MD4/DES, else every IKEv2 auth fails.
 RUN set -eux; \
-    for b in nft iptables wg openvpn swanctl ip xl2tpd pppd; do \
+    for b in nft iptables wg openvpn swanctl ip xl2tpd pppd amneziawg-go; do \
       command -v "$b" >/dev/null || { echo "MISSING binary: $b" >&2; exit 1; }; \
     done; \
     plugins="$(ls /usr/lib/ipsec/plugins/ 2>/dev/null || true)"; \
@@ -62,6 +73,7 @@ ENV SERVICE_PROTOCOL=grpc \
 WORKDIR /app
 COPY --from=builder /src/main /app/main
 COPY --from=builder /usr/local/bin/xray /usr/local/bin/xray
+COPY --from=builder /usr/local/bin/amneziawg-go /usr/local/bin/amneziawg-go
 COPY --from=builder /usr/local/share/xray /usr/local/share/xray
 COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
