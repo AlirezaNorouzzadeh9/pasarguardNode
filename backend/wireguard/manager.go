@@ -79,21 +79,10 @@ type Manager struct {
 	nl        netlinkOps
 	configure configureDeviceFunc
 	mu        sync.RWMutex
-
-	// Set when this core runs as AmneziaWG; stopAmnezia tears down the
-	// userspace process that owns the interface.
-	amnezia     *AmneziaConfig
-	stopAmnezia func()
 }
 
 // NewManager creates a new WireGuard manager
 func NewManager(interfaceName string) (*Manager, error) {
-	return NewManagerWithAmnezia(interfaceName, nil)
-}
-
-// NewManagerWithAmnezia creates a manager that runs the interface as AmneziaWG
-// when amnezia carries obfuscation settings, and as plain WireGuard otherwise.
-func NewManagerWithAmnezia(interfaceName string, amnezia *AmneziaConfig) (*Manager, error) {
 	client, err := wgctrl.New()
 	if err != nil {
 		return nil, fmt.Errorf("failed to create wgctrl client: %w", err)
@@ -104,16 +93,7 @@ func NewManagerWithAmnezia(interfaceName string, amnezia *AmneziaConfig) (*Manag
 		iFaceName: interfaceName,
 		nl:        defaultNetlinkOps{},
 		configure: defaultConfigureDevice,
-		amnezia:   amnezia,
 	}, nil
-}
-
-// stopUserspace shuts down the AmneziaWG process, if this interface has one.
-func (m *Manager) stopUserspace() {
-	if m.stopAmnezia != nil {
-		m.stopAmnezia()
-		m.stopAmnezia = nil
-	}
 }
 
 func (m *Manager) getNetlinkOps() netlinkOps {
@@ -170,32 +150,17 @@ func (m *Manager) InitializeWithPeers(privateKey wgtypes.Key, listenPort int, se
 		return fmt.Errorf("failed to cleanup existing interface: %w", err)
 	}
 
-	// AmneziaWG runs in userspace and creates its own TUN device, so the link
-	// is not ours to add. Everything after this point — addresses, peers,
-	// stats — is identical, because it speaks the same control protocol.
-	cleanupOnError := true
-	if m.amnezia.Enabled() {
-		stop, err := startAmnezia(m.iFaceName, m.amnezia)
-		if err != nil {
-			return fmt.Errorf("failed to start amneziawg: %w", err)
-		}
-		m.stopAmnezia = stop
-		defer func() {
-			if cleanupOnError {
-				m.stopUserspace()
-			}
-		}()
-	} else {
-		link := &netlink.Wireguard{LinkAttrs: netlink.LinkAttrs{Name: m.iFaceName}}
-		if err := nl.LinkAdd(link); err != nil {
-			return fmt.Errorf("failed to add link: %w", wrapPermissionDeniedError("creating wireguard interface", err))
-		}
-		defer func() {
-			if cleanupOnError {
-				_ = m.cleanupExistingInterface()
-			}
-		}()
+	// Create WireGuard interface
+	link := &netlink.Wireguard{LinkAttrs: netlink.LinkAttrs{Name: m.iFaceName}}
+	if err := nl.LinkAdd(link); err != nil {
+		return fmt.Errorf("failed to add link: %w", wrapPermissionDeniedError("creating wireguard interface", err))
 	}
+	cleanupOnError := true
+	defer func() {
+		if cleanupOnError {
+			_ = m.cleanupExistingInterface()
+		}
+	}()
 
 	// Configure WireGuard (single call for base settings + optional peers snapshot).
 	config := buildInitialWGConfig(privateKey, listenPort, peers)
@@ -301,11 +266,8 @@ func (m *Manager) Close() error {
 		}
 	}
 
-	// An AmneziaWG interface belongs to the userspace process; killing it
-	// removes the TUN device, so there is no link left for netlink to delete.
-	if m.stopAmnezia != nil {
-		m.stopUserspace()
-	} else if err := m.cleanupExistingInterface(); err != nil {
+	// Remove interface
+	if err := m.cleanupExistingInterface(); err != nil {
 		errs = append(errs, err)
 	}
 
