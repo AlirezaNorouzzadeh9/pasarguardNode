@@ -68,7 +68,22 @@ func applyHostRouting(pool, egressIface string) func() {
 		log.Printf("ikev2 host routing: forward accept for %s in %v (owner %q)", pool, rules, owner)
 	}
 
+	// Clients size their segments from their own link MTU, which says nothing
+	// about a relay/backhaul tunnel in front of this node. Without a clamp the
+	// tunnel connects, small packets flow and every TLS handshake stalls.
+	if mss, err := hostroute.EnsureMSSClampForSubnet(pool, owner); err != nil {
+		log.Printf("ikev2 host routing: MSS clamp for %s failed: %v", pool, err)
+	} else if mss > 0 {
+		log.Printf("ikev2 host routing: MSS clamp for %s set to %d", pool, mss)
+	}
+	stopMSS := hostroute.StartMSSRefresher(pool, owner, func(format string, args ...any) {
+		log.Printf("ikev2 host routing: "+format, args...)
+	})
+
 	return func() {
+		if stopMSS != nil {
+			stopMSS()
+		}
 		if egressCleanup != nil {
 			egressCleanup()
 		}
@@ -77,6 +92,9 @@ func applyHostRouting(pool, egressIface string) func() {
 		}
 		if err := hostroute.RemoveForwardRules(owner); err != nil {
 			log.Printf("ikev2 host routing: forward cleanup failed: %v", err)
+		}
+		if err := hostroute.RemoveMSSClamp(owner); err != nil {
+			log.Printf("ikev2 host routing: MSS clamp cleanup failed: %v", err)
 		}
 	}
 }

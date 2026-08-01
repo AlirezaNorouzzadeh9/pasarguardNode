@@ -67,7 +67,21 @@ func applyHostRouting(pool, egressIface string) func() {
 		log.Printf("l2tp host routing: forward accept for %s in %v (owner %q)", pool, rules, owner)
 	}
 
+	// Without an MSS clamp the tunnel connects but every TLS handshake stalls
+	// whenever the path in front of this node is narrower than the client thinks.
+	if mss, err := hostroute.EnsureMSSClampForSubnet(pool, owner); err != nil {
+		log.Printf("l2tp host routing: MSS clamp for %s failed: %v", pool, err)
+	} else if mss > 0 {
+		log.Printf("l2tp host routing: MSS clamp for %s set to %d", pool, mss)
+	}
+	stopMSS := hostroute.StartMSSRefresher(pool, owner, func(format string, args ...any) {
+		log.Printf("l2tp host routing: "+format, args...)
+	})
+
 	return func() {
+		if stopMSS != nil {
+			stopMSS()
+		}
 		if egressCleanup != nil {
 			egressCleanup()
 		}
@@ -76,6 +90,9 @@ func applyHostRouting(pool, egressIface string) func() {
 		}
 		if err := hostroute.RemoveForwardRules(owner); err != nil {
 			log.Printf("l2tp host routing: forward cleanup failed: %v", err)
+		}
+		if err := hostroute.RemoveMSSClamp(owner); err != nil {
+			log.Printf("l2tp host routing: MSS clamp cleanup failed: %v", err)
 		}
 	}
 }

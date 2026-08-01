@@ -74,7 +74,21 @@ func applyHostRouting(serverSubnet, egressIface string) func() {
 		log.Printf("openvpn host routing: forward accept for %s in %v (owner %q)", serverSubnet, rules, owner)
 	}
 
+	// Belt and braces next to OpenVPN's own mssfix: a relay/backhaul tunnel in
+	// front of this node narrows the path further than the client can know.
+	if mss, err := hostroute.EnsureMSSClampForSubnet(serverSubnet, owner); err != nil {
+		log.Printf("openvpn host routing: MSS clamp for %s failed: %v", serverSubnet, err)
+	} else if mss > 0 {
+		log.Printf("openvpn host routing: MSS clamp for %s set to %d", serverSubnet, mss)
+	}
+	stopMSS := hostroute.StartMSSRefresher(serverSubnet, owner, func(format string, args ...any) {
+		log.Printf("openvpn host routing: "+format, args...)
+	})
+
 	return func() {
+		if stopMSS != nil {
+			stopMSS()
+		}
 		if egressCleanup != nil {
 			egressCleanup()
 		}
@@ -83,6 +97,9 @@ func applyHostRouting(serverSubnet, egressIface string) func() {
 		}
 		if err := hostroute.RemoveForwardRules(owner); err != nil {
 			log.Printf("openvpn host routing: forward cleanup failed: %v", err)
+		}
+		if err := hostroute.RemoveMSSClamp(owner); err != nil {
+			log.Printf("openvpn host routing: MSS clamp cleanup failed: %v", err)
 		}
 	}
 }
