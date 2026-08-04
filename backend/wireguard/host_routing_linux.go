@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"github.com/pasarguard/node/backend/egress"
-	"github.com/pasarguard/node/backend/hostroute"
 	"log"
 	"os"
 	"os/exec"
