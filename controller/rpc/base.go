@@ -27,7 +27,7 @@ func (s *Service) Start(ctx context.Context, data *common.Backend) (*common.Base
 		}
 	}
 
-	// A node can run several cores at once (e.g. openvpn + ikev2). The panel is a
+	// A node can run several cores at once (e.g. openvpn + wireguard). The panel is a
 	// single client that calls Start once per core, so a Start from the SAME
 	// client adds another backend; a Start from a DIFFERENT client takes over.
 	existing := s.Backend() != nil

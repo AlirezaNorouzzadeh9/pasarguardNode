@@ -3,18 +3,18 @@
 # PasarGuard Node — Docker installer (multi-backend fork)
 # -------------------------------------------------------
 # Installs the node as a Docker container from this fork's prebuilt image (all
-# backends baked in: xray / openvpn / wireguard / strongSwan-IKEv2). Run with no
+# backends baked in: xray / openvpn / wireguard). Run with no
 # argument for an interactive menu: toggle which backends run here, set the node
 # (gRPC) port + API key, then install. It installs Docker if missing, writes a
 # docker-compose.yml, brings the container up, and prints the Server CA + details
 # to register the node in the panel.
 #
 #   sudo bash install.sh                                    # interactive menu
-#   sudo bash install.sh install --disable openvpn,ikev2 \
+#   sudo bash install.sh install --disable openvpn \
 #        --api-key <uuid> --service-port 62050 --yes        # scripted
 #   sudo bash install.sh update | restart | status | logs | uninstall
 #
-# VPN ports (OpenVPN/WireGuard) and IKEv2 (fixed 500/4500) are configured in the
+# VPN ports (OpenVPN/WireGuard) are configured in the
 # PANEL's core config, not here — host networking binds whatever the panel sets.
 #
 set -euo pipefail
@@ -36,7 +36,7 @@ ASSUME_YES=0
 QUIET="${QUIET:-0}"                           # 1 -> hide docker pull/build output
 
 # Which backends run here (image ships all; off -> PG_NODE_DISABLE_*).
-XRAY_ON=1; OVPN_ON=1; WG_ON=1; IKEV2_ON=1
+XRAY_ON=1; OVPN_ON=1; WG_ON=1
 
 # ---- colors / logging -------------------------------------------------------
 if [ -t 1 ]; then
@@ -258,7 +258,7 @@ Commands:
   uninstall             Stop and remove the container (asks about data)
 
 Install options (skip the menu with -y):
-  --disable <list>      comma list of xray,openvpn,wireguard,ikev2 to NOT run here
+  --disable <list>      comma list of xray,openvpn,wireguard to NOT run here
   --api-key <uuid>      (default: auto-generate)
   --service-port <n>    gRPC port the panel connects to (default: ${SERVICE_PORT})
   --image <ref>         image to pull (default: ${IMAGE})
@@ -281,7 +281,6 @@ parse_install_args() {
         echo "$d" | grep -qi ",xray,"      && XRAY_ON=0
         echo "$d" | grep -qi ",openvpn,"   && OVPN_ON=0
         echo "$d" | grep -qi ",wireguard," && WG_ON=0
-        echo "$d" | grep -qi ",ikev2,"     && IKEV2_ON=0
         shift 2 ;;
       --api-key) API_KEY="$2"; shift 2 ;;
       --service-port|--port) SERVICE_PORT="$2"; shift 2 ;;
@@ -328,13 +327,12 @@ menu_command() {
     printf "    ${c_bld}1${c_off}  %-24s %b\n" "Xray"               "$(onoff "$XRAY_ON")"
     printf "    ${c_bld}2${c_off}  %-24s %b\n" "OpenVPN"            "$(onoff "$OVPN_ON")"
     printf "    ${c_bld}3${c_off}  %-24s %b\n" "WireGuard"          "$(onoff "$WG_ON")"
-    printf "    ${c_bld}4${c_off}  %-24s %b\n" "IKEv2 (strongSwan)" "$(onoff "$IKEV2_ON")"
     echo
     echo -e "  ${c_bld}Settings${c_off}"
-    printf "    ${c_bld}5${c_off}  %-24s ${c_cyn}%s${c_off}\n" "Node port (gRPC)" "$SERVICE_PORT"
-    printf "    ${c_bld}6${c_off}  %-24s ${c_cyn}%s${c_off}\n" "API key"          "${API_KEY:-auto-generate}"
-    printf "    ${c_bld}7${c_off}  %-24s ${c_cyn}%s${c_off}\n" "Image source"     "$([ "$BUILD_FROM_SOURCE" = 1 ] && echo 'build from source' || echo 'pull (ghcr)')"
-    echo -e "    ${c_dim}VPN ports (OpenVPN/WireGuard) are set in the panel; IKEv2 is 500/4500.${c_off}"
+    printf "    ${c_bld}4${c_off}  %-24s ${c_cyn}%s${c_off}\n" "Node port (gRPC)" "$SERVICE_PORT"
+    printf "    ${c_bld}5${c_off}  %-24s ${c_cyn}%s${c_off}\n" "API key"          "${API_KEY:-auto-generate}"
+    printf "    ${c_bld}6${c_off}  %-24s ${c_cyn}%s${c_off}\n" "Image source"     "$([ "$BUILD_FROM_SOURCE" = 1 ] && echo 'build from source' || echo 'pull (ghcr)')"
+    echo -e "    ${c_dim}VPN ports (OpenVPN/WireGuard) are set in the panel.${c_off}"
     echo
     echo -e "  ${c_bld}Actions${c_off}"
     echo -e "    ${c_grn}${c_bld}i${c_off}  Install / reinstall with the selection above"
@@ -346,10 +344,9 @@ menu_command() {
       1) XRAY_ON=$((1 - XRAY_ON)) ;;
       2) OVPN_ON=$((1 - OVPN_ON)) ;;
       3) WG_ON=$((1 - WG_ON)) ;;
-      4) IKEV2_ON=$((1 - IKEV2_ON)) ;;
-      5) SERVICE_PORT="$(ask_num "Node port (gRPC connects here)" "$SERVICE_PORT")" ;;
-      6) API_KEY="$(ask_val "API key (blank = auto-generate)" "$API_KEY")" ;;
-      7) BUILD_FROM_SOURCE=$((1 - BUILD_FROM_SOURCE)) ;;
+      4) SERVICE_PORT="$(ask_num "Node port (gRPC connects here)" "$SERVICE_PORT")" ;;
+      5) API_KEY="$(ask_val "API key (blank = auto-generate)" "$API_KEY")" ;;
+      6) BUILD_FROM_SOURCE=$((1 - BUILD_FROM_SOURCE)) ;;
       i|I) echo; run_install; break ;;
       u|U) echo; update_command; press_enter ;;
       s|S) echo; status_command; press_enter ;;
@@ -390,7 +387,6 @@ write_compose() {
     [ "$XRAY_ON"  -eq 0 ] && echo "      PG_NODE_DISABLE_XRAY: \"1\""
     [ "$OVPN_ON"  -eq 0 ] && echo "      PG_NODE_DISABLE_OPENVPN: \"1\""
     [ "$WG_ON"    -eq 0 ] && echo "      PG_NODE_DISABLE_WIREGUARD: \"1\""
-    [ "$IKEV2_ON" -eq 0 ] && echo "      PG_NODE_DISABLE_IKEV2: \"1\""
     echo "    volumes:"
     echo "      - /lib/modules:/lib/modules:ro"
     echo "      - ${DATA_DIR}:/var/lib/pg-node"
@@ -413,7 +409,6 @@ print_summary() {
   [ "$XRAY_ON"  -eq 1 ] && backends="${backends} xray"
   [ "$OVPN_ON"  -eq 1 ] && backends="${backends} openvpn"
   [ "$WG_ON"    -eq 1 ] && backends="${backends} wireguard"
-  [ "$IKEV2_ON" -eq 1 ] && backends="${backends} ikev2"
 
   echo; hr
   echo -e "  ${c_grn}${c_bld}PasarGuard Node running in Docker${c_off}"

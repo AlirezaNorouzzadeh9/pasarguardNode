@@ -20,14 +20,6 @@ type Xray struct {
 	metricPort int
 	cancelFunc context.CancelFunc
 	mu         sync.RWMutex
-
-	// Per-user device/IP-limit state (email-keyed). xray-core has no per-IP
-	// eviction, so enforcement disconnects an over-limit user (removes them from
-	// every inbound) and re-admits them after a cooldown.
-	limitMu     sync.Mutex
-	userLimits  map[string]uint32       // email -> ip_limit (0 = unlimited)
-	userByEmail map[string]*common.User // email -> last-synced user (for re-admit)
-	kicked      map[string]time.Time    // email -> time disconnected for exceeding the limit
 }
 
 func New(ctx context.Context, xrayConfig *Config, users []*common.User, apiPort, metricPort int, cfg *config.Config) (*Xray, error) {
@@ -49,12 +41,9 @@ func New(ctx context.Context, xrayConfig *Config, users []*common.User, apiPort,
 	xCtx, xCancel := context.WithCancel(context.Background())
 
 	xray := &Xray{
-		cancelFunc:  xCancel,
-		cfg:         cfg,
-		metricPort:  metricPort,
-		userLimits:  make(map[string]uint32),
-		userByEmail: make(map[string]*common.User),
-		kicked:      make(map[string]time.Time),
+		cancelFunc: xCancel,
+		cfg:        cfg,
+		metricPort: metricPort,
 	}
 
 	start := time.Now()
@@ -74,7 +63,6 @@ func New(ctx context.Context, xrayConfig *Config, users []*common.User, apiPort,
 			}
 		}
 		log.Printf("synced %d users on startup, total clients in config: %d", len(users), totalClients)
-		xray.rememberUsers(users, true)
 	} else {
 		log.Println("no users provided on startup")
 	}
@@ -109,7 +97,6 @@ func New(ctx context.Context, xrayConfig *Config, users []*common.User, apiPort,
 	// Wait a bit for Xray to fully initialize before starting health checks
 	// This prevents false positives during startup
 	go xray.checkXrayHealth(xCtx)
-	go xray.enforceIpLimits(xCtx)
 
 	log.Println("xray started, Version:", xray.Version())
 

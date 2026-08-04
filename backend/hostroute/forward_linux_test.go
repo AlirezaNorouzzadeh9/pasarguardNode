@@ -51,14 +51,14 @@ func TestRuleHandlesWithComment(t *testing.T) {
 	listing := []byte(`table ip filter {
 	chain FORWARD {
 		type filter hook forward priority filter; policy drop;
-		ip saddr 10.30.0.0/24 accept comment "pg_node_fwd owner=ikev2_10_30_0_0_24 type=forward subnet=10.30.0.0/24 direction=outbound" # handle 12
-		ip daddr 10.30.0.0/24 ct state established,related accept comment "pg_node_fwd owner=ikev2_10_30_0_0_24 type=forward subnet=10.30.0.0/24 direction=return" # handle 13
+		ip saddr 10.30.0.0/24 accept comment "pg_node_fwd owner=openvpn_10_30_0_0_24 type=forward subnet=10.30.0.0/24 direction=outbound" # handle 12
+		ip daddr 10.30.0.0/24 ct state established,related accept comment "pg_node_fwd owner=openvpn_10_30_0_0_24 type=forward subnet=10.30.0.0/24 direction=return" # handle 13
 		iifname "wg-main" oifname "eth0" accept comment "pg_node_wg owner=wg-main_1 type=forward" # handle 14
 		counter packets 1 bytes 2 jump DOCKER-USER # handle 15
 	}
 }`)
 
-	got := ruleHandlesWithComment(listing, ownerComment("ikev2_10_30_0_0_24"))
+	got := ruleHandlesWithComment(listing, ownerComment("openvpn_10_30_0_0_24"))
 	if len(got) != 2 || got[0] != "12" || got[1] != "13" {
 		t.Fatalf("want handles [12 13] for our owner only, got %v", got)
 	}
@@ -70,8 +70,8 @@ func TestRuleHandlesWithComment(t *testing.T) {
 }
 
 func TestRuleCommentAndOwnerRoundTrip(t *testing.T) {
-	c := ruleComment("ikev2_10_30_0_0_24", "10.30.0.0/24", true)
-	if want := ownerComment("ikev2_10_30_0_0_24"); !contains(c, want) {
+	c := ruleComment("openvpn_10_30_0_0_24", "10.30.0.0/24", true)
+	if want := ownerComment("openvpn_10_30_0_0_24"); !contains(c, want) {
 		t.Fatalf("comment %q must start with owner prefix %q so cleanup can find it", c, want)
 	}
 }

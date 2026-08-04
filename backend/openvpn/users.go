@@ -11,15 +11,6 @@ import (
 type userEntry struct {
 	serial      string
 	fingerprint string
-	ipLimit     uint32 // max simultaneous sessions; 0 = unlimited
-	speedLimit  uint32 // per-direction throughput cap kbit/s; 0 = unlimited
-}
-
-// speedLimitFor returns the per-direction cap for a common name (0 = unlimited).
-func (s *userStore) speedLimitFor(commonName string) uint32 {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.users[commonName].speedLimit
 }
 
 // userStore is the authorized-user allowlist consulted by the management client.
@@ -60,9 +51,10 @@ func (s *userStore) authorizedLocked(commonName, serial string) bool {
 	return true
 }
 
-// tryConnect authorizes a connecting session and enforces the per-user device
-// limit. It returns allowed=false with a reason for an over-limit or unknown
-// user. A session id already counted (REAUTH of the same client) is idempotent.
+// tryConnect authorizes a connecting session and records it in the live-session
+// set (which feeds the online-device stats). It returns allowed=false with a
+// reason for an unknown user. A session id already counted (REAUTH of the same
+// client) is idempotent.
 func (s *userStore) tryConnect(commonName, serial, clientID string) (bool, string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -77,45 +69,8 @@ func (s *userStore) tryConnect(commonName, serial, clientID string) (bool, strin
 	if _, exists := set[clientID]; exists {
 		return true, "" // REAUTH of a session we already count
 	}
-	limit := s.users[commonName].ipLimit
-	if limit > 0 && uint32(len(set)) >= limit {
-		return false, "device limit reached"
-	}
 	set[clientID] = struct{}{}
 	return true, ""
-}
-
-// excessSessions returns live session client ids that exceed the user's device
-// limit, removing them from the tracked set so the caller can kill them. This
-// enforces the limit retroactively — e.g. when it is lowered while the user is
-// already connected on more devices than allowed.
-func (s *userStore) excessSessions(commonName string) []string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	entry, ok := s.users[commonName]
-	if !ok || entry.ipLimit == 0 {
-		return nil
-	}
-	set := s.sessions[commonName]
-	if uint32(len(set)) <= entry.ipLimit {
-		return nil
-	}
-	var excess []string
-	var kept uint32
-	for cid := range set {
-		if kept < entry.ipLimit {
-			kept++
-			continue
-		}
-		excess = append(excess, cid)
-	}
-	for _, cid := range excess {
-		delete(set, cid)
-	}
-	if len(s.sessions[commonName]) == 0 {
-		delete(s.sessions, commonName)
-	}
-	return excess
 }
 
 // releaseSession drops a client id from the live-session set (on disconnect).
@@ -156,7 +111,7 @@ func (s *userStore) applyUser(u *common.User) (cn string, changedSerial bool, re
 	}
 
 	ov := u.GetProxies().GetOpenvpn()
-	entry := userEntry{serial: ov.GetSerial(), fingerprint: ov.GetFingerprint(), ipLimit: u.GetIpLimit(), speedLimit: u.GetSpeedLimit()}
+	entry := userEntry{serial: ov.GetSerial(), fingerprint: ov.GetFingerprint()}
 
 	s.mu.Lock()
 	prev, existed := s.users[cn]
@@ -179,7 +134,7 @@ func (s *userStore) replaceAll(users []*common.User) (removed []string) {
 			continue
 		}
 		ov := u.GetProxies().GetOpenvpn()
-		next[cn] = userEntry{serial: ov.GetSerial(), fingerprint: ov.GetFingerprint(), ipLimit: u.GetIpLimit(), speedLimit: u.GetSpeedLimit()}
+		next[cn] = userEntry{serial: ov.GetSerial(), fingerprint: ov.GetFingerprint()}
 	}
 
 	s.mu.Lock()

@@ -26,12 +26,6 @@ func TestBackendInstanceID(t *testing.T) {
 			want:   "ovpn-tcp",
 		},
 		{
-			name:   "ikev2 is keyed by inbound tag",
-			typ:    common.BackendType_IKEV2,
-			config: `{"inbound_tag":"ikev2-main","pool":"10.30.0.0/24"}`,
-			want:   "ikev2-main",
-		},
-		{
 			name:   "wireguard is keyed by interface name",
 			typ:    common.BackendType_WIREGUARD,
 			config: `{"interface_name":"wg0","listen_port":51820}`,
@@ -111,8 +105,8 @@ func TestBackendKeyDistinguishesSameTypeInstances(t *testing.T) {
 // Different protocols keep working side by side.
 func TestBackendKeySeparatesTypes(t *testing.T) {
 	ovpn := backendKey{typ: common.BackendType_OPENVPN, instance: "shared-tag"}
-	ike := backendKey{typ: common.BackendType_IKEV2, instance: "shared-tag"}
-	if ovpn == ike {
+	wg := backendKey{typ: common.BackendType_WIREGUARD, instance: "shared-tag"}
+	if ovpn == wg {
 		t.Fatal("cores of different types must never collide, even with the same instance id")
 	}
 }

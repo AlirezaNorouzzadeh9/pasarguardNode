@@ -62,7 +62,6 @@ func (wg *WireGuard) updateConnectedPeers(ctx context.Context) {
 
 	emailByKey := wg.peerStore.GetEmailMap()
 	samples := make([]stats.Sample, 0, len(device.Peers))
-	deviceKeys := make(map[string][]string, len(device.Peers))
 
 	for _, peer := range device.Peers {
 		select {
@@ -85,18 +84,9 @@ func (wg *WireGuard) updateConnectedPeers(ctx context.Context) {
 		}
 
 		endpointIP := ""
-		// The device limit counts endpoints including the source port, because
-		// clients reaching this node through a relay all share one address:
-		// counting bare IPs would see every user's devices as a single one and
-		// silently never enforce the limit. Stats and the panel keep the plain
-		// IP — the port is meaningless to a human reading a device list.
-		endpointKey := ""
 		if peer.Endpoint != nil {
 			endpointIP = peer.Endpoint.IP.String()
-			endpointKey = peer.Endpoint.String()
 		}
-
-		deviceKeys[email] = append(deviceKeys[email], endpointKey)
 
 		samples = append(samples, stats.Sample{
 			PublicKey:  peerKey,
@@ -108,23 +98,6 @@ func (wg *WireGuard) updateConnectedPeers(ctx context.Context) {
 	}
 
 	wg.statsTracker.UpdateStatsBatch(samples)
-
-	// Feed this poll's endpoints into the device-limit enforcer.
-	activeIPs := make(map[string]map[string]struct{}, len(deviceKeys))
-	for email, keys := range deviceKeys {
-		for _, key := range keys {
-			if key == "" {
-				continue
-			}
-			set := activeIPs[email]
-			if set == nil {
-				set = make(map[string]struct{})
-				activeIPs[email] = set
-			}
-			set[key] = struct{}{}
-		}
-	}
-	wg.enforceIpLimits(mgr, activeIPs)
 }
 
 func (wg *WireGuard) logStatsDeviceReadError(err error) {

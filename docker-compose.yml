@@ -4,12 +4,12 @@ services:
     container_name: pg-node
     restart: always
 
-    # Host networking so the VPN ports (OpenVPN, WireGuard, IKEv2 500/4500) and the
-    # node's own NAT/forwarding rules land directly on the host.
+    # Host networking so the VPN ports (OpenVPN, WireGuard) and the node's own
+    # NAT/forwarding rules land directly on the host.
     network_mode: host
 
     cap_add:
-      - NET_ADMIN   # tun/wg interfaces, iptables/nftables NAT, IPsec
+      - NET_ADMIN   # tun/wg interfaces, iptables/nftables NAT
       - SYS_MODULE  # modprobe wireguard
 
     devices:
@@ -28,7 +28,6 @@ services:
       # To hard-disable one at the node regardless of the panel (it's then greyed
       # out in the panel too), uncomment — e.g. an xray+wireguard-only node:
       # PG_NODE_DISABLE_OPENVPN: "1"
-      # PG_NODE_DISABLE_IKEV2: "1"
       # PG_NODE_DISABLE_WIREGUARD: "1"
       # PG_NODE_DISABLE_XRAY: "1"
 

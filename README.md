@@ -7,11 +7,10 @@ One node, four VPN backends in a single Docker image, all driven by the panel:
 | **Xray** | VLESS / VMESS / Trojan / Shadowsocks | full xray-core |
 | **OpenVPN** | OpenVPN (udp/tcp) | `.ovpn` per user, served by the panel |
 | **WireGuard** | WireGuard | `.conf` + QR per user |
-| **IKEv2 / IPsec** | strongSwan (EAP-MSCHAPv2) | built-in client on iOS / Windows — no app |
 
 The panel assigns cores to the node over gRPC; the node starts/stops the
-matching backends, enforces per-user IP limits on all of them, and reports
-per-protocol traffic and online IPs back to the panel.
+matching backends and reports per-protocol traffic and online IPs back to the
+panel.
 
 > **Private repo:** the source is private, but the container image on GHCR is
 > public — servers can pull and run it without any GitHub credentials. Only
@@ -42,11 +41,11 @@ Then on the server:
 sudo bash install.sh
 ```
 
-Non-interactive, e.g. an xray + wireguard node (OpenVPN/IKEv2 disabled) with
+Non-interactive, e.g. an xray + wireguard node (OpenVPN disabled) with
 your own API key:
 
 ```bash
-sudo bash install.sh install --disable openvpn,ikev2 \
+sudo bash install.sh install --disable openvpn \
   --api-key <uuid> --service-port 62050 --yes
 ```
 
@@ -82,7 +81,7 @@ The entrypoint generates the node TLS certificate on first run and prints the
 
 > Open the VPN ports on any **cloud** firewall too — host networking binds them
 > on the host directly. OpenVPN/WireGuard ports are set in the panel's core
-> config; IKEv2 is always UDP 500 + 4500.
+> config.
 
 ## Choosing which backends run
 
@@ -95,7 +94,6 @@ greyed out in the panel):
 | `PG_NODE_DISABLE_XRAY=1` | never run xray on this node |
 | `PG_NODE_DISABLE_OPENVPN=1` | never run OpenVPN |
 | `PG_NODE_DISABLE_WIREGUARD=1` | never run WireGuard |
-| `PG_NODE_DISABLE_IKEV2=1` | never run IKEv2 |
 
 ## Development
 
@@ -112,6 +110,6 @@ prebuilt binaries.
 ## Credits & license
 
 Based on [PasarGuard/node](https://github.com/PasarGuard/node), extended with
-multi-backend (OpenVPN / WireGuard / IKEv2) support, IP-limit enforcement on
-every backend, per-protocol stats, and the Docker/installer stack. Licensed
+multi-backend (OpenVPN / WireGuard) support, per-protocol stats, and the
+Docker/installer stack. Licensed
 under the [GPL-3.0](LICENSE).

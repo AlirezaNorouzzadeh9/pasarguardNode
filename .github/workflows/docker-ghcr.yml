@@ -37,14 +37,16 @@ jobs:
 
       # The host-firewall rules decide whether tunnel traffic reaches the internet
       # at all, and a mistake there is invisible until a user reports "connects but
-      # nothing works" — so they get tested before anything ships.
+      # nothing works" — so they get tested before anything ships, together with
+      # the backends themselves. controller/rest and controller/rpc are left out:
+      # they need TLS material that only exists on a provisioned node.
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
           cache: false
 
-      - name: Test host routing + ikev2 revocation
-        run: go test ./backend/hostroute/... ./backend/ikev2/... -v
+      - name: Test host routing
+        run: go test ./backend/hostroute/... ./backend/openvpn/... ./backend/wireguard/... ./controller -v
 
       - uses: docker/setup-buildx-action@v3
 

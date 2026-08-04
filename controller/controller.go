@@ -14,10 +14,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/pasarguard/node/backend"
-	"github.com/pasarguard/node/backend/ikev2"
-	"github.com/pasarguard/node/backend/l2tp"
 	"github.com/pasarguard/node/backend/openvpn"
-	"github.com/pasarguard/node/backend/ratelimit"
 	"github.com/pasarguard/node/backend/wireguard"
 	"github.com/pasarguard/node/backend/xray"
 	"github.com/pasarguard/node/common"
@@ -45,8 +42,8 @@ type backendKey struct {
 
 type Controller struct {
 	// backends holds every core running on this node, keyed by type+instance,
-	// so one node can serve e.g. openvpn + ikev2 at the same time — and several
-	// openvpn cores side by side.
+	// so one node can serve e.g. openvpn + wireguard at the same time — and
+	// several openvpn cores side by side.
 	backends    map[backendKey]backend.Backend
 	cfg         *config.Config
 	apiPort     int
@@ -56,10 +53,6 @@ type Controller struct {
 	stats       *common.SystemStatsResponse
 	cancelFunc  context.CancelFunc
 	mu          sync.RWMutex
-
-	// shaper applies per-user speed limits with tc; nil until a limited client
-	// appears, so nodes that never use limits install nothing.
-	shaper *ratelimit.Manager
 
 	// Installed-backend capabilities are detected once (they don't change while
 	// the node runs) and reused, since version probes exec external commands.
@@ -94,7 +87,6 @@ func (c *Controller) Connect(ip string, keepAlive uint64) {
 	ctx, cancel := context.WithCancel(context.Background())
 	c.cancelFunc = cancel
 	go c.recordSystemStats(ctx)
-	go c.enforceGlobalLimits(ctx)
 	if keepAlive > 0 {
 		go c.keepAliveTracker(ctx, time.Duration(keepAlive)*time.Second)
 	}
@@ -115,8 +107,6 @@ func (c *Controller) Disconnect() {
 	for _, b := range backends {
 		b.Shutdown()
 	}
-
-	c.closeShaping()
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -147,8 +137,6 @@ func backendDisabled(t common.BackendType) bool {
 		common.BackendType_XRAY:      {"PG_NODE_DISABLE_XRAY"},
 		common.BackendType_OPENVPN:   {"PG_NODE_DISABLE_OPENVPN"},
 		common.BackendType_WIREGUARD: {"PG_NODE_DISABLE_WIREGUARD", "PG_NODE_DISABLE_WG"},
-		common.BackendType_IKEV2:     {"PG_NODE_DISABLE_IKEV2"},
-		common.BackendType_L2TP:      {"PG_NODE_DISABLE_L2TP"},
 	}
 	for _, n := range names[t] {
 		switch strings.ToLower(strings.TrimSpace(os.Getenv(n))) {
@@ -236,31 +224,6 @@ func (c *Controller) StartBackend(ctx context.Context, backendCfg *common.Backen
 			return err
 		}
 
-	case common.BackendType_IKEV2:
-		if err := ikev2.CheckDeps(); err != nil {
-			return err
-		}
-		config, err := ikev2.NewConfig(backendCfg.GetConfig())
-		if err != nil {
-			return err
-		}
-		newBackend, err = ikev2.New(c.cfg, config, backendCfg.GetUsers())
-		if err != nil {
-			return err
-		}
-
-	case common.BackendType_L2TP:
-		if err := l2tp.CheckDeps(); err != nil {
-			return err
-		}
-		config, err := l2tp.NewConfig(backendCfg.GetConfig())
-		if err != nil {
-			return err
-		}
-		newBackend, err = l2tp.New(c.cfg, config, backendCfg.GetUsers())
-		if err != nil {
-			return err
-		}
 	default:
 		return errors.New("invalid backend type")
 	}
@@ -289,31 +252,6 @@ func (c *Controller) Backend() backend.Backend {
 		return nil
 	}
 	return composite
-}
-
-// enforceGlobalLimits periodically applies each user's ip_limit across every
-// protocol on the node. Per-backend enforcement only counts a user's devices
-// within one protocol, so a user at ip_limit 1 could still be online via ikev2
-// and l2tp at once; this pass sheds that cross-protocol excess by priority.
-func (c *Controller) enforceGlobalLimits(ctx context.Context) {
-	ticker := time.NewTicker(10 * time.Second)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			c.mu.RLock()
-			limiters := make([]backend.DeviceLimiter, 0, len(c.backends))
-			for _, b := range c.backends {
-				if dl, ok := b.(backend.DeviceLimiter); ok {
-					limiters = append(limiters, dl)
-				}
-			}
-			c.mu.RUnlock()
-			backend.EnforceGlobalDeviceLimits(limiters)
-		}
-	}
 }
 
 func (c *Controller) keepAliveTracker(ctx context.Context, keepAlive time.Duration) {
@@ -355,7 +293,6 @@ func (c *Controller) recordSystemStats(ctx context.Context) {
 	}
 
 	collect()
-	c.refreshShaping()
 
 	for {
 		select {
@@ -363,7 +300,6 @@ func (c *Controller) recordSystemStats(ctx context.Context) {
 			return
 		case <-ticker.C:
 			collect()
-			c.refreshShaping()
 		}
 	}
 }
@@ -406,18 +342,18 @@ func (c *Controller) SystemStats(ctx context.Context) *common.SystemStatsRespons
 // backendTypeKey maps a backend type to the short name the panel keys on
 // (matches the capabilities/versions naming: wireguard -> "wg").
 // backendInstanceID pulls the identifier that distinguishes two cores of the
-// same type out of the core config the panel sent. OpenVPN and IKEv2 are
-// identified by their inbound tag and WireGuard by its interface name — all
-// three already scope their on-disk state by that value, so instances never
-// collide. Xray is deliberately left unkeyed: one xray process serves every
-// inbound, so a second xray core should still replace the first.
+// same type out of the core config the panel sent. OpenVPN is identified by its
+// inbound tag and WireGuard by its interface name — both already scope their
+// on-disk state by that value, so instances never collide. Xray is deliberately
+// left unkeyed: one xray process serves every inbound, so a second xray core
+// should still replace the first.
 //
 // An unparseable or tag-less config falls back to "", which restores the old
 // replace-by-type behaviour rather than silently starting a duplicate.
 func backendInstanceID(t common.BackendType, configStr string) string {
 	var field string
 	switch t {
-	case common.BackendType_OPENVPN, common.BackendType_IKEV2, common.BackendType_L2TP:
+	case common.BackendType_OPENVPN:
 		field = "inbound_tag"
 	case common.BackendType_WIREGUARD:
 		field = "interface_name"
@@ -443,10 +379,6 @@ func backendTypeKey(t common.BackendType) string {
 		return "openvpn"
 	case common.BackendType_WIREGUARD:
 		return "wg"
-	case common.BackendType_IKEV2:
-		return "ikev2"
-	case common.BackendType_L2TP:
-		return "l2tp"
 	default:
 		return t.String()
 	}
@@ -527,14 +459,6 @@ func (c *Controller) capabilities() ([]common.BackendType, map[string]string) {
 		if !backendDisabled(common.BackendType_WIREGUARD) && wireguard.CheckDeps() == nil {
 			avail = append(avail, common.BackendType_WIREGUARD)
 			versions["wg"] = wireguard.DetectVersion()
-		}
-		if !backendDisabled(common.BackendType_IKEV2) && ikev2.CheckDeps() == nil {
-			avail = append(avail, common.BackendType_IKEV2)
-			versions["ikev2"] = ikev2.DetectVersion()
-		}
-		if !backendDisabled(common.BackendType_L2TP) && l2tp.CheckDeps() == nil {
-			avail = append(avail, common.BackendType_L2TP)
-			versions["l2tp"] = l2tp.DetectVersion()
 		}
 		c.capsAvail = avail
 		c.capsVersions = versions

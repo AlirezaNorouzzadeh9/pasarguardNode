@@ -11,7 +11,8 @@
 //
 // So any backend that forwards client traffic must also add an explicit accept
 // for its client subnet. Rules are matched on the client subnet rather than an
-// interface because IPsec is policy-based and has no interface of its own.
+// interface, so a backend whose traffic has no interface of its own is covered
+// too.
 //
 // Rules are tagged with an owner comment so they can be removed on stop, and are
 // inserted into every base chain hooked to `forward` (that's where Docker's
