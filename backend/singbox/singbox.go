@@ -42,6 +42,12 @@ type SingBox struct {
 	state    lifecycleState
 	users    []*common.User
 
+	// runCtx outlives any single RPC. Inbounds rebuilt during a user sync are
+	// tied to the context passed to Manager.Create, so handing it a request
+	// context makes the new inbound die the moment that RPC returns — the
+	// listener comes up and is torn down again in the same instant.
+	runCtx context.Context
+
 	logChan      chan string
 	cancel       context.CancelFunc
 	startTime    time.Time
@@ -56,7 +62,9 @@ func New(cfg *config.Config, sbConfig *Config, users []*common.User) (*SingBox, 
 		return nil, errors.New("singbox config must not be nil")
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	// Derived from the config context so sing-box's type registry travels with
+	// it, and cancelled only on shutdown.
+	ctx, cancel := context.WithCancel(sbConfig.Ctx)
 	s := &SingBox{
 		config:    sbConfig,
 		cfg:       cfg,
@@ -65,6 +73,7 @@ func New(cfg *config.Config, sbConfig *Config, users []*common.User) (*SingBox, 
 		startTime: time.Now(),
 		state:     lifecycleStopped,
 		users:     append([]*common.User(nil), users...),
+		runCtx:    ctx,
 	}
 
 	if err := s.start(ctx); err != nil {
@@ -145,7 +154,10 @@ func (s *SingBox) Restart() error {
 	if old != nil {
 		_ = old.Close()
 	}
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(s.config.Ctx)
+	s.mu.Lock()
+	s.runCtx = ctx
+	s.mu.Unlock()
 	s.cancel = cancel
 	if err := s.start(ctx); err != nil {
 		cancel()

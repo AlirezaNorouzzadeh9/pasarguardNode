@@ -86,6 +86,10 @@ func (s *SingBox) rebuildUserInbounds(ctx context.Context, users []*common.User)
 	s.mu.RLock()
 	instance := s.instance
 	running := s.state == lifecycleRunning
+	// Deliberately not the caller's context: it belongs to the gRPC request and
+	// is cancelled as soon as the sync returns, which would immediately close
+	// the inbound we are about to create.
+	createCtx := s.runCtx
 	s.mu.RUnlock()
 
 	if !running || instance == nil {
@@ -119,7 +123,7 @@ func (s *SingBox) rebuildUserInbounds(ctx context.Context, users []*common.User)
 			continue
 		}
 		if err := manager.Create(
-			ctx,
+			createCtx,
 			router,
 			logFactory.NewLogger(fmt.Sprintf("inbound/%s[%s]", applied.Type, applied.Tag)),
 			applied.Tag,

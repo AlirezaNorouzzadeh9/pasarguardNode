@@ -179,3 +179,40 @@ func TestSyncUsersRebuildsInboundWithoutRestart(t *testing.T) {
 		t.Fatal("the inbound was not rebuilt, so the new user cannot be active")
 	}
 }
+
+// A user sync arrives on a gRPC request context that is cancelled the moment
+// the RPC returns. Rebuilding the inbound with that context made the fresh
+// listener close immediately ("listener closed: context canceled") and the
+// protocol went dead until the next restart.
+func TestSyncSurvivesTheCallerCancellingItsContext(t *testing.T) {
+	cfg, err := NewConfig(hysteriaConfig(t, 21446))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sb, err := New(&config.Config{LogBufferSize: 16}, cfg, nil)
+	if err != nil {
+		t.Skipf("sing-box could not start (build tags?): %v", err)
+	}
+	defer sb.Shutdown()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	if err := sb.SyncUsers(ctx, []*common.User{hysteriaUser("alice", "secret-a")}); err != nil {
+		t.Fatalf("SyncUsers: %v", err)
+	}
+	cancel() // the RPC returns; its context dies
+
+	time.Sleep(300 * time.Millisecond)
+
+	inbound, ok := sb.instance.Inbound().Get("hy2")
+	if !ok {
+		t.Fatal("the inbound disappeared after the caller's context was cancelled")
+	}
+
+	// A second sync must still work against that inbound.
+	if err := sb.SyncUsers(context.Background(), []*common.User{hysteriaUser("bob", "secret-b")}); err != nil {
+		t.Fatalf("second SyncUsers: %v", err)
+	}
+	if after, ok := sb.instance.Inbound().Get("hy2"); !ok || after == inbound {
+		t.Fatal("the inbound was not rebuilt on the second sync")
+	}
+}
