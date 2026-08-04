@@ -24,6 +24,11 @@ message Backend {
   repeated User users = 3;
   uint64 keep_alive = 4;
   repeated string exclude_inbounds = 5;
+  // Set when the panel is adding another core to a node it is already
+  // connected to, rather than connecting to it. A plain Start resets the node
+  // and replaces whatever it was running; an additive one leaves the cores
+  // that are already up alone.
+  bool additive = 6;
 }
 
 // log

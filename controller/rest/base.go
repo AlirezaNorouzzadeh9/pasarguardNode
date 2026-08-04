@@ -28,11 +28,17 @@ func (s *Service) Start(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if s.Backend() != nil {
-		if !s.IsCurrentClient(ip) {
-			http.Error(w, "node is controlled by another client", http.StatusForbidden)
-			return
-		}
+	running := s.Backend() != nil
+	if running && !s.IsCurrentClient(ip) {
+		http.Error(w, "node is controlled by another client", http.StatusForbidden)
+		return
+	}
+
+	// An additive Start brings up one more core on a node that is already
+	// serving. A plain Start is the panel connecting, which resets the node so
+	// that it runs exactly the cores that connection brings and nothing stale.
+	additive := running && data.GetAdditive()
+	if running && !additive {
 		log.Println("New connection from ", ip, " core control access was taken away from previous client.")
 		s.Disconnect()
 	}
@@ -42,7 +48,11 @@ func (s *Service) Start(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.Connect(ip, data.GetKeepAlive())
+	if additive {
+		s.NewRequest()
+	} else {
+		s.Connect(ip, data.GetKeepAlive())
+	}
 
 	common.SendProtoResponse(w, s.BaseInfoResponse())
 }

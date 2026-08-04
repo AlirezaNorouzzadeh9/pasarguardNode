@@ -2,8 +2,10 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
@@ -24,8 +26,19 @@ type Service interface {
 	Disconnect()
 }
 
+// backendKey identifies one running core. Keying by type alone would allow only
+// a single core per protocol, but a node may need several — e.g. two WireGuard
+// cores serving different exit subnets. The instance part comes from the core
+// config (see backendInstanceID), so the panel can assign several cores of the
+// same type and each gets its own backend.
+type backendKey struct {
+	typ      common.BackendType
+	instance string
+}
+
 type Controller struct {
-	backend     backend.Backend
+	// backends holds every core running on this node, keyed by type+instance.
+	backends    map[backendKey]backend.Backend
 	cfg         *config.Config
 	apiPort     int
 	metricPort  int
@@ -41,6 +54,7 @@ func New(cfg *config.Config) *Controller {
 	_, cancel := context.WithCancel(context.Background())
 	return &Controller{
 		cfg:        cfg,
+		backends:   make(map[backendKey]backend.Backend),
 		apiPort:    netutil.FindFreePort(),
 		metricPort: netutil.FindFreePort(),
 		cancelFunc: cancel,
@@ -71,19 +85,22 @@ func (c *Controller) Disconnect() {
 	c.cancelFunc()
 
 	c.mu.Lock()
-	backend := c.backend
+	running := make([]backend.Backend, 0, len(c.backends))
+	for _, b := range c.backends {
+		running = append(running, b)
+	}
 	c.mu.Unlock()
 
-	// Shutdown backend outside of lock to avoid deadlock
+	// Shutdown backends outside of lock to avoid deadlock
 	// Shutdown() will wait for process termination to complete
-	if backend != nil {
-		backend.Shutdown()
+	for _, b := range running {
+		b.Shutdown()
 	}
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	c.backend = nil
+	c.backends = make(map[backendKey]backend.Backend)
 	c.apiPort = netutil.FindFreePort()
 	c.metricPort = netutil.FindFreePort()
 	c.clientIP = ""
@@ -115,21 +132,42 @@ func (c *Controller) NewRequest() {
 	c.lastRequest = time.Now()
 }
 
-func (c *Controller) StartBackend(ctx context.Context, backend *common.Backend) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+// StartBackend brings a core up and adds it to the node's backend set. Cores are
+// tracked per type+instance, so a node can run several side by side — different
+// protocols, and also several cores of the same protocol, such as two WireGuard
+// interfaces with different exit subnets. Calling it again for the same instance
+// retires the old one and swaps the new one in; cores under a different key keep
+// serving.
+func (c *Controller) StartBackend(ctx context.Context, backendCfg *common.Backend) error {
+	key := backendKey{
+		typ:      backendCfg.GetType(),
+		instance: backendInstanceID(backendCfg.GetType(), backendCfg.GetConfig()),
+	}
 
-	switch backend.GetType() {
+	// Retire a previous instance of this exact core *before* launching the new
+	// one: the replacement reuses the same listen port and on-disk state, so
+	// letting the two overlap makes the new one fail to bind.
+	c.mu.Lock()
+	old := c.backends[key]
+	delete(c.backends, key)
+	c.mu.Unlock()
+	if old != nil {
+		old.Shutdown()
+	}
+
+	var newBackend backend.Backend
+
+	switch backendCfg.GetType() {
 	case common.BackendType_XRAY:
-		config, err := xray.NewConfig(backend.GetConfig(), backend.GetExcludeInbounds())
+		config, err := xray.NewConfig(backendCfg.GetConfig(), backendCfg.GetExcludeInbounds())
 		if err != nil {
 			return err
 		}
 
-		newBackend, err := xray.New(
+		newBackend, err = xray.New(
 			ctx,
 			config,
-			backend.GetUsers(),
+			backendCfg.GetUsers(),
 			c.apiPort,
 			c.metricPort,
 			c.cfg,
@@ -137,29 +175,81 @@ func (c *Controller) StartBackend(ctx context.Context, backend *common.Backend) 
 		if err != nil {
 			return err
 		}
-		c.backend = newBackend
 
 	case common.BackendType_WIREGUARD:
-		config, err := wireguard.NewConfig(backend.GetConfig())
+		config, err := wireguard.NewConfig(backendCfg.GetConfig())
 		if err != nil {
 			return err
 		}
-		newBackend, err := wireguard.New(c.cfg, config, backend.GetUsers())
+		newBackend, err = wireguard.New(c.cfg, config, backendCfg.GetUsers())
 		if err != nil {
 			return err
 		}
-		c.backend = newBackend
 	default:
 		return errors.New("invalid backend type")
 	}
 
+	c.mu.Lock()
+	c.backends[key] = newBackend
+	c.mu.Unlock()
+
 	return nil
 }
 
+// backendInstanceID pulls the identifier that distinguishes two cores of the
+// same type out of the core config the panel sent. WireGuard is identified by
+// its interface name, which already scopes its kernel device and on-disk state,
+// so instances never collide. Xray is deliberately left unkeyed: one xray
+// process serves every inbound, so a second xray core replaces the first.
+//
+// An unparseable or nameless config falls back to "", restoring the old
+// replace-by-type behaviour rather than silently starting a duplicate.
+func backendInstanceID(t common.BackendType, configStr string) string {
+	var field string
+	switch t {
+	case common.BackendType_WIREGUARD:
+		field = "interface_name"
+	default:
+		return ""
+	}
+
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(configStr), &parsed); err != nil {
+		return ""
+	}
+	if v, ok := parsed[field].(string); ok {
+		return strings.TrimSpace(v)
+	}
+	return ""
+}
+
+// Backend returns a composite view over every core running on this node, so the
+// rpc/rest handlers can keep operating on a single backend.Backend.
 func (c *Controller) Backend() backend.Backend {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	return c.backend
+	if len(c.backends) == 0 {
+		return nil
+	}
+	list := make([]backend.Backend, 0, len(c.backends))
+	for _, b := range c.backends {
+		list = append(list, b)
+	}
+	composite := backend.NewComposite(list)
+	if composite == nil {
+		return nil
+	}
+	return composite
+}
+
+// anyBackend returns one running backend without allocating a composite, for
+// the read-only paths that only need "is anything up". It takes no lock of its
+// own — callers must already hold c.mu.
+func (c *Controller) anyBackend() backend.Backend {
+	for _, b := range c.backends {
+		return b
+	}
+	return nil
 }
 
 func (c *Controller) keepAliveTracker(ctx context.Context, keepAlive time.Duration) {
@@ -215,7 +305,7 @@ func (c *Controller) recordSystemStats(ctx context.Context) {
 func (c *Controller) SystemStats(ctx context.Context) *common.SystemStatsResponse {
 	c.mu.RLock()
 	statsSnapshot := c.stats
-	backendSnapshot := c.backend
+	backendSnapshot := c.anyBackend()
 	c.mu.RUnlock()
 
 	response := &common.SystemStatsResponse{}
@@ -256,18 +346,19 @@ func (c *Controller) BaseInfoResponse() *common.BaseInfoResponse {
 		NodeVersion: NodeVersion,
 	}
 
-	if c.backend != nil {
-		response.Started = c.backend.Started()
-		response.CoreVersion = c.backend.Version()
+	if b := c.anyBackend(); b != nil {
+		response.Started = b.Started()
+		response.CoreVersion = b.Version()
 	}
 
 	return response
 }
 
 func (c *Controller) OutboundsLatency(ctx context.Context, request *common.LatencyRequest) (*common.LatencyResponse, error) {
-	c.mu.RLock()
-	backendSnapshot := c.backend
-	c.mu.RUnlock()
+	// The composite, not any single backend: latency is an xray feature, and
+	// picking one core at random could hand back the WireGuard one and report
+	// no outbounds at all.
+	backendSnapshot := c.Backend()
 
 	if backendSnapshot == nil {
 		return &common.LatencyResponse{Latencies: []*common.Latency{}}, nil
