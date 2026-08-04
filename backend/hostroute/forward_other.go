@@ -8,19 +8,3 @@ package hostroute
 func EnsureForwardAcceptForSubnet(subnet, ownerID string) ([]string, error) { return nil, nil }
 
 func RemoveForwardRules(ownerID string) error { return nil }
-
-func EnsureMSSClampForSubnet(subnet, ownerID string) (int, error) { return 0, nil }
-
-func RemoveMSSClamp(ownerID string) error { return nil }
-
-func PathMSS() (int, error) { return 0, nil }
-
-func StartMSSRefresher(subnet, ownerID string, logf func(format string, args ...any)) func() {
-	return func() {}
-}
-
-func EnsureMSSClampForInterface(iface, ownerID string) (int, error) { return 0, nil }
-
-func StartMSSRefresherForInterface(iface, ownerID string, logf func(format string, args ...any)) func() {
-	return func() {}
-}
