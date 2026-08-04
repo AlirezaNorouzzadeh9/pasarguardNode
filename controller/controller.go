@@ -15,6 +15,7 @@ import (
 
 	"github.com/pasarguard/node/backend"
 	"github.com/pasarguard/node/backend/openvpn"
+	"github.com/pasarguard/node/backend/singbox"
 	"github.com/pasarguard/node/backend/wireguard"
 	"github.com/pasarguard/node/backend/xray"
 	"github.com/pasarguard/node/common"
@@ -137,6 +138,7 @@ func backendDisabled(t common.BackendType) bool {
 		common.BackendType_XRAY:      {"PG_NODE_DISABLE_XRAY"},
 		common.BackendType_OPENVPN:   {"PG_NODE_DISABLE_OPENVPN"},
 		common.BackendType_WIREGUARD: {"PG_NODE_DISABLE_WIREGUARD", "PG_NODE_DISABLE_WG"},
+		common.BackendType_SINGBOX:   {"PG_NODE_DISABLE_SINGBOX"},
 	}
 	for _, n := range names[t] {
 		switch strings.ToLower(strings.TrimSpace(os.Getenv(n))) {
@@ -220,6 +222,16 @@ func (c *Controller) StartBackend(ctx context.Context, backendCfg *common.Backen
 		// NewBackend starts one server per listener, so a single core can offer
 		// both UDP and TCP.
 		newBackend, err = openvpn.NewBackend(c.cfg, config, backendCfg.GetUsers())
+		if err != nil {
+			return err
+		}
+
+	case common.BackendType_SINGBOX:
+		config, err := singbox.NewConfig(backendCfg.GetConfig())
+		if err != nil {
+			return err
+		}
+		newBackend, err = singbox.New(c.cfg, config, backendCfg.GetUsers())
 		if err != nil {
 			return err
 		}
@@ -355,6 +367,8 @@ func backendInstanceID(t common.BackendType, configStr string) string {
 	switch t {
 	case common.BackendType_OPENVPN:
 		field = "inbound_tag"
+	case common.BackendType_SINGBOX:
+		field = "tag"
 	case common.BackendType_WIREGUARD:
 		field = "interface_name"
 	default:
@@ -379,6 +393,8 @@ func backendTypeKey(t common.BackendType) string {
 		return "openvpn"
 	case common.BackendType_WIREGUARD:
 		return "wg"
+	case common.BackendType_SINGBOX:
+		return "singbox"
 	default:
 		return t.String()
 	}
@@ -459,6 +475,12 @@ func (c *Controller) capabilities() ([]common.BackendType, map[string]string) {
 		if !backendDisabled(common.BackendType_WIREGUARD) && wireguard.CheckDeps() == nil {
 			avail = append(avail, common.BackendType_WIREGUARD)
 			versions["wg"] = wireguard.DetectVersion()
+		}
+		// sing-box is compiled into this binary, so it is always installed —
+		// there is no external dependency to probe for.
+		if !backendDisabled(common.BackendType_SINGBOX) {
+			avail = append(avail, common.BackendType_SINGBOX)
+			versions["singbox"] = singbox.DetectVersion()
 		}
 		c.capsAvail = avail
 		c.capsVersions = versions

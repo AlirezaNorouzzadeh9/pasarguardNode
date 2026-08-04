@@ -24,6 +24,7 @@ enum BackendType {
   OPENVPN = 2;
   IKEV2 = 3;
   L2TP = 4;
+  SINGBOX = 5;
 }
 
 message Backend {

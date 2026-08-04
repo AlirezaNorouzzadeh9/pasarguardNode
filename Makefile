@@ -1,7 +1,11 @@
 NAME = pasarguard-node-$(GOOS)-$(GOARCH)
 
 LDFLAGS = -s -w -buildid=
-PARAMS = -trimpath -ldflags "$(LDFLAGS)" -v
+# sing-box is compiled in, and its features are behind build tags: without
+# with_quic there is no hysteria2/tuic ("QUIC is not included in this build"),
+# and without with_v2ray_api there are no per-user traffic counters to report.
+TAGS = with_quic,with_v2ray_api,with_utls
+PARAMS = -trimpath -tags "$(TAGS)" -ldflags "$(LDFLAGS)" -v
 MAIN = ./cmd/node
 PREFIX ?= $(shell go env GOPATH)
 XRAY_OS ?=
@@ -29,13 +33,13 @@ XRAY_INSTALL_ARGS   := $(strip $(if $(XRAY_OS_EFFECTIVE),--os $(XRAY_OS_EFFECTIV
 
 ifeq ($(GOOS),windows)
 OUTPUT = $(NAME).exe
-ADDITION = go build -o w$(NAME).exe -trimpath -ldflags "-H windowsgui $(LDFLAGS)" -v $(MAIN)
+ADDITION = go build -o w$(NAME).exe -trimpath -tags "$(TAGS)" -ldflags "-H windowsgui $(LDFLAGS)" -v $(MAIN)
 else
 OUTPUT = $(NAME)
 endif
 
 ifeq ($(shell echo "$(GOARCH)" | grep -Eq "(mips|mipsle)" && echo true),true)
-ADDITION = GOMIPS=softfloat go build -o $(NAME)_softfloat -trimpath -ldflags "$(LDFLAGS)" -v $(MAIN)
+ADDITION = GOMIPS=softfloat go build -o $(NAME)_softfloat -trimpath -tags "$(TAGS)" -ldflags "$(LDFLAGS)" -v $(MAIN)
 endif
 
 .PHONY: clean build test test-race-wireguard test-integration test-integration-full test-integration-wireguard
