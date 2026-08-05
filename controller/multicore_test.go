@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"context"
 	"testing"
 
 	"github.com/pasarguard/node/common"
@@ -89,4 +90,85 @@ func TestBackendIsNilUntilACoreStarts(t *testing.T) {
 	if c.backends == nil {
 		t.Fatal("the backend map should be initialised by New")
 	}
+}
+
+// A plain Start re-declares the node's whole core set, so a core the panel has
+// stopped sending must be torn down. Without this it kept running — and kept
+// holding its port — until the container restarted.
+func TestPlainStartRetiresCoresTheePanelNoLongerSends(t *testing.T) {
+	c := New(nil)
+	first := &fakeBackend{}
+	second := &fakeBackend{}
+	c.backends[backendKey{typ: common.BackendType_WIREGUARD, instance: "wgde1"}] = first
+	c.backends[backendKey{typ: common.BackendType_WIREGUARD, instance: "wgde2"}] = second
+
+	c.retireFor(&common.Backend{Type: common.BackendType_XRAY, Additive: false})
+
+	if len(c.backends) != 0 {
+		t.Fatalf("a plain Start must clear every core, %d left", len(c.backends))
+	}
+	if !first.stopped || !second.stopped {
+		t.Fatal("retired cores must be shut down, not just dropped from the map")
+	}
+}
+
+// An additive Start is the panel adding one more core to a node it is already
+// connected to; the cores already up must survive it.
+func TestAdditiveStartLeavesTheOtherCoresRunning(t *testing.T) {
+	c := New(nil)
+	keep := &fakeBackend{}
+	replace := &fakeBackend{}
+	c.backends[backendKey{typ: common.BackendType_WIREGUARD, instance: "wgde1"}] = keep
+	c.backends[backendKey{typ: common.BackendType_WIREGUARD, instance: "wgde2"}] = replace
+
+	c.retireFor(&common.Backend{
+		Type:     common.BackendType_WIREGUARD,
+		Config:   `{"interface_name":"wgde2"}`,
+		Additive: true,
+	})
+
+	if len(c.backends) != 1 {
+		t.Fatalf("only the matching core should go, %d left", len(c.backends))
+	}
+	if keep.stopped {
+		t.Fatal("an additive Start must not touch the other cores")
+	}
+	if !replace.stopped {
+		t.Fatal("the core being replaced must be shut down")
+	}
+}
+
+// fakeBackend records whether it was shut down; nothing else in these tests
+// touches a core, so the rest of the interface is inert.
+type fakeBackend struct{ stopped bool }
+
+func (f *fakeBackend) Started() bool       { return !f.stopped }
+func (f *fakeBackend) Version() string     { return "test" }
+func (f *fakeBackend) Logs() <-chan string { return nil }
+func (f *fakeBackend) Restart() error      { return nil }
+func (f *fakeBackend) Shutdown()           { f.stopped = true }
+
+func (f *fakeBackend) SyncUser(context.Context, *common.User) error                { return nil }
+func (f *fakeBackend) SyncUsers(context.Context, []*common.User) error             { return nil }
+func (f *fakeBackend) UpdateUsers(context.Context, []*common.User) error           { return nil }
+func (f *fakeBackend) UpdateUsersAndRestart(context.Context, []*common.User) error { return nil }
+
+func (f *fakeBackend) GetSysStats(context.Context) (*common.BackendStatsResponse, error) {
+	return nil, nil
+}
+
+func (f *fakeBackend) GetStats(context.Context, *common.StatRequest) (*common.StatResponse, error) {
+	return nil, nil
+}
+
+func (f *fakeBackend) GetOutboundsLatency(context.Context, *common.LatencyRequest) (*common.LatencyResponse, error) {
+	return nil, nil
+}
+
+func (f *fakeBackend) GetUserOnlineStats(context.Context, string) (*common.OnlineStatResponse, error) {
+	return nil, nil
+}
+
+func (f *fakeBackend) GetUserOnlineIpListStats(context.Context, string) (*common.StatsOnlineIpListResponse, error) {
+	return nil, nil
 }

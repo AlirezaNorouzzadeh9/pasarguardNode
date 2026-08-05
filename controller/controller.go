@@ -145,16 +145,16 @@ func (c *Controller) StartBackend(ctx context.Context, backendCfg *common.Backen
 		instance: backendInstanceID(backendCfg.GetType(), backendCfg.GetConfig()),
 	}
 
-	// Retire a previous instance of this exact core *before* launching the new
-	// one: the replacement reuses the same listen port and on-disk state, so
-	// letting the two overlap makes the new one fail to bind.
-	c.mu.Lock()
-	old := c.backends[key]
-	delete(c.backends, key)
-	c.mu.Unlock()
-	if old != nil {
-		old.Shutdown()
-	}
+	// A plain Start re-declares what this node runs, so everything else has to
+	// go: without this, a core the panel has stopped sending — deleted, or
+	// unassigned from the node — keeps running until the container restarts,
+	// still holding its port. An additive Start is the panel adding one more
+	// core to a node it is already connected to, and must leave the rest alone.
+	//
+	// Retiring happens *before* the new core launches either way: a replacement
+	// reuses the same listen port and on-disk state, so overlapping the two
+	// makes the new one fail to bind.
+	c.retireFor(backendCfg)
 
 	var newBackend backend.Backend
 
@@ -214,6 +214,35 @@ func (c *Controller) StartBackend(ctx context.Context, backendCfg *common.Backen
 	c.mu.Unlock()
 
 	return nil
+}
+
+// retireFor shuts down the cores this Start supersedes and removes them from
+// the set. Split out from StartBackend so the two modes can be tested without
+// launching a real core.
+func (c *Controller) retireFor(backendCfg *common.Backend) {
+	key := backendKey{
+		typ:      backendCfg.GetType(),
+		instance: backendInstanceID(backendCfg.GetType(), backendCfg.GetConfig()),
+	}
+
+	c.mu.Lock()
+	var retired []backend.Backend
+	if backendCfg.GetAdditive() {
+		if old := c.backends[key]; old != nil {
+			retired = append(retired, old)
+		}
+		delete(c.backends, key)
+	} else {
+		for existing, b := range c.backends {
+			retired = append(retired, b)
+			delete(c.backends, existing)
+		}
+	}
+	c.mu.Unlock()
+
+	for _, old := range retired {
+		old.Shutdown()
+	}
 }
 
 // backendInstanceID pulls the identifier that distinguishes two cores of the
