@@ -18,7 +18,16 @@ FROM alpine:latest
 
 LABEL org.opencontainers.image.source="https://github.com/PasarGuard/node"
 
-RUN apk update && apk add --no-cache wireguard-tools nftables iproute2 procps
+RUN apk update && apk add --no-cache wireguard-tools nftables iproute2 procps openvpn iptables
+
+# Fail the build rather than ship an image whose cores die on startup: a missing
+# runtime binary only shows up when a user tries to connect, long after the node
+# has reported itself healthy.
+RUN set -e; \
+    for bin in wg nft ip openvpn iptables; do \
+        command -v "$bin" >/dev/null || { echo "missing runtime dependency: $bin" >&2; exit 1; }; \
+    done; \
+    openvpn --version | head -1
 
 WORKDIR /app
 COPY --from=builder /src/main /app/main

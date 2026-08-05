@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/pasarguard/node/backend"
+	"github.com/pasarguard/node/backend/openvpn"
 	"github.com/pasarguard/node/backend/wireguard"
 	"github.com/pasarguard/node/backend/xray"
 	"github.com/pasarguard/node/common"
@@ -185,6 +186,25 @@ func (c *Controller) StartBackend(ctx context.Context, backendCfg *common.Backen
 		if err != nil {
 			return err
 		}
+
+	case common.BackendType_OPENVPN:
+		// Checked up front: openvpn is an external binary, and a missing one is
+		// much easier to read here than as a process that dies seconds after
+		// the core has already reported itself started.
+		if err := openvpn.CheckDeps(); err != nil {
+			return err
+		}
+		config, err := openvpn.NewConfig(backendCfg.GetConfig())
+		if err != nil {
+			return err
+		}
+		// NewBackend starts one server per listener, so a single core can offer
+		// both UDP and TCP.
+		newBackend, err = openvpn.NewBackend(c.cfg, config, backendCfg.GetUsers())
+		if err != nil {
+			return err
+		}
+
 	default:
 		return errors.New("invalid backend type")
 	}
@@ -209,6 +229,11 @@ func backendInstanceID(t common.BackendType, configStr string) string {
 	switch t {
 	case common.BackendType_WIREGUARD:
 		field = "interface_name"
+	case common.BackendType_OPENVPN:
+		// An OpenVPN core is one or more openvpn processes with their own ports
+		// and subnet, so several can coexist. The inbound tag is what tells them
+		// apart — the same thing the panel names the core's inbound by.
+		field = "inbound_tag"
 	default:
 		return ""
 	}

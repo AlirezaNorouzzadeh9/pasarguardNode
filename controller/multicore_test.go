@@ -37,6 +37,26 @@ func TestXrayCoresStillReplaceEachOther(t *testing.T) {
 	}
 }
 
+// OpenVPN cores are keyed by inbound tag, so a node can run more than one —
+// each is its own process with its own port and client subnet.
+func TestOpenVPNCoresAreKeyedByInboundTag(t *testing.T) {
+	udp := backendInstanceID(common.BackendType_OPENVPN, `{"inbound_tag":"ovpn-udp","port":1194}`)
+	tcp := backendInstanceID(common.BackendType_OPENVPN, `{"inbound_tag":"ovpn-tcp","port":443}`)
+
+	if udp != "ovpn-udp" || tcp != "ovpn-tcp" {
+		t.Fatalf("inbound tags not used as instance ids: %q, %q", udp, tcp)
+	}
+	if (backendKey{typ: common.BackendType_OPENVPN, instance: udp}) ==
+		(backendKey{typ: common.BackendType_OPENVPN, instance: tcp}) {
+		t.Fatal("two openvpn cores must not collide on one key")
+	}
+	// A config with no tag cannot be told apart, so it has to replace by type
+	// rather than silently start a second server on the same port.
+	if got := backendInstanceID(common.BackendType_OPENVPN, `{"port":1194}`); got != "" {
+		t.Fatalf("expected empty instance id when inbound_tag is missing, got %q", got)
+	}
+}
+
 // Different protocols never collide, even if their instance ids match.
 func TestDifferentProtocolsNeverCollide(t *testing.T) {
 	xray := backendKey{typ: common.BackendType_XRAY, instance: "same"}

@@ -26,6 +26,7 @@ type BackendType int32
 const (
 	BackendType_XRAY      BackendType = 0
 	BackendType_WIREGUARD BackendType = 1
+	BackendType_OPENVPN   BackendType = 2
 )
 
 // Enum value maps for BackendType.
@@ -33,10 +34,12 @@ var (
 	BackendType_name = map[int32]string{
 		0: "XRAY",
 		1: "WIREGUARD",
+		2: "OPENVPN",
 	}
 	BackendType_value = map[string]int32{
 		"XRAY":      0,
 		"WIREGUARD": 1,
+		"OPENVPN":   2,
 	}
 )
 
@@ -1309,6 +1312,62 @@ func (x *Hysteria) GetAuth() string {
 	return ""
 }
 
+type Openvpn struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Decimal string of the client's certificate serial number. OpenVPN exposes
+	// the peer certificate serial as decimal (tls_serial_0), so this has to
+	// match that representation exactly for the node to identify the user.
+	Serial string `protobuf:"bytes,1,opt,name=serial,proto3" json:"serial,omitempty"`
+	// Hex-encoded SHA-256 fingerprint of the client certificate (DER).
+	Fingerprint   string `protobuf:"bytes,2,opt,name=fingerprint,proto3" json:"fingerprint,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Openvpn) Reset() {
+	*x = Openvpn{}
+	mi := &file_common_service_proto_msgTypes[20]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Openvpn) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Openvpn) ProtoMessage() {}
+
+func (x *Openvpn) ProtoReflect() protoreflect.Message {
+	mi := &file_common_service_proto_msgTypes[20]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Openvpn.ProtoReflect.Descriptor instead.
+func (*Openvpn) Descriptor() ([]byte, []int) {
+	return file_common_service_proto_rawDescGZIP(), []int{20}
+}
+
+func (x *Openvpn) GetSerial() string {
+	if x != nil {
+		return x.Serial
+	}
+	return ""
+}
+
+func (x *Openvpn) GetFingerprint() string {
+	if x != nil {
+		return x.Fingerprint
+	}
+	return ""
+}
+
 type Proxy struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Vmess         *Vmess                 `protobuf:"bytes,1,opt,name=vmess,proto3" json:"vmess,omitempty"`
@@ -1317,13 +1376,14 @@ type Proxy struct {
 	Shadowsocks   *Shadowsocks           `protobuf:"bytes,4,opt,name=shadowsocks,proto3" json:"shadowsocks,omitempty"`
 	Wireguard     *Wireguard             `protobuf:"bytes,5,opt,name=wireguard,proto3" json:"wireguard,omitempty"`
 	Hysteria      *Hysteria              `protobuf:"bytes,6,opt,name=hysteria,proto3" json:"hysteria,omitempty"`
+	Openvpn       *Openvpn               `protobuf:"bytes,7,opt,name=openvpn,proto3" json:"openvpn,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *Proxy) Reset() {
 	*x = Proxy{}
-	mi := &file_common_service_proto_msgTypes[20]
+	mi := &file_common_service_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1335,7 +1395,7 @@ func (x *Proxy) String() string {
 func (*Proxy) ProtoMessage() {}
 
 func (x *Proxy) ProtoReflect() protoreflect.Message {
-	mi := &file_common_service_proto_msgTypes[20]
+	mi := &file_common_service_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1348,7 +1408,7 @@ func (x *Proxy) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Proxy.ProtoReflect.Descriptor instead.
 func (*Proxy) Descriptor() ([]byte, []int) {
-	return file_common_service_proto_rawDescGZIP(), []int{20}
+	return file_common_service_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *Proxy) GetVmess() *Vmess {
@@ -1393,6 +1453,13 @@ func (x *Proxy) GetHysteria() *Hysteria {
 	return nil
 }
 
+func (x *Proxy) GetOpenvpn() *Openvpn {
+	if x != nil {
+		return x.Openvpn
+	}
+	return nil
+}
+
 type User struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Email         string                 `protobuf:"bytes,1,opt,name=email,proto3" json:"email,omitempty"`
@@ -1404,7 +1471,7 @@ type User struct {
 
 func (x *User) Reset() {
 	*x = User{}
-	mi := &file_common_service_proto_msgTypes[21]
+	mi := &file_common_service_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1416,7 +1483,7 @@ func (x *User) String() string {
 func (*User) ProtoMessage() {}
 
 func (x *User) ProtoReflect() protoreflect.Message {
-	mi := &file_common_service_proto_msgTypes[21]
+	mi := &file_common_service_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1429,7 +1496,7 @@ func (x *User) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use User.ProtoReflect.Descriptor instead.
 func (*User) Descriptor() ([]byte, []int) {
-	return file_common_service_proto_rawDescGZIP(), []int{21}
+	return file_common_service_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *User) GetEmail() string {
@@ -1462,7 +1529,7 @@ type Users struct {
 
 func (x *Users) Reset() {
 	*x = Users{}
-	mi := &file_common_service_proto_msgTypes[22]
+	mi := &file_common_service_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1474,7 +1541,7 @@ func (x *Users) String() string {
 func (*Users) ProtoMessage() {}
 
 func (x *Users) ProtoReflect() protoreflect.Message {
-	mi := &file_common_service_proto_msgTypes[22]
+	mi := &file_common_service_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1487,7 +1554,7 @@ func (x *Users) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Users.ProtoReflect.Descriptor instead.
 func (*Users) Descriptor() ([]byte, []int) {
-	return file_common_service_proto_rawDescGZIP(), []int{22}
+	return file_common_service_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *Users) GetUsers() []*User {
@@ -1508,7 +1575,7 @@ type UsersChunk struct {
 
 func (x *UsersChunk) Reset() {
 	*x = UsersChunk{}
-	mi := &file_common_service_proto_msgTypes[23]
+	mi := &file_common_service_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1520,7 +1587,7 @@ func (x *UsersChunk) String() string {
 func (*UsersChunk) ProtoMessage() {}
 
 func (x *UsersChunk) ProtoReflect() protoreflect.Message {
-	mi := &file_common_service_proto_msgTypes[23]
+	mi := &file_common_service_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1533,7 +1600,7 @@ func (x *UsersChunk) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UsersChunk.ProtoReflect.Descriptor instead.
 func (*UsersChunk) Descriptor() ([]byte, []int) {
-	return file_common_service_proto_rawDescGZIP(), []int{23}
+	return file_common_service_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *UsersChunk) GetUsers() []*User {
@@ -1645,14 +1712,18 @@ const file_common_service_proto_rawDesc = "" +
 	"public_key\x18\x01 \x01(\tR\tpublicKey\x12\x19\n" +
 	"\bpeer_ips\x18\x02 \x03(\tR\apeerIps\"\x1e\n" +
 	"\bHysteria\x12\x12\n" +
-	"\x04auth\x18\x01 \x01(\tR\x04auth\"\x95\x02\n" +
+	"\x04auth\x18\x01 \x01(\tR\x04auth\"C\n" +
+	"\aOpenvpn\x12\x16\n" +
+	"\x06serial\x18\x01 \x01(\tR\x06serial\x12 \n" +
+	"\vfingerprint\x18\x02 \x01(\tR\vfingerprint\"\xc1\x02\n" +
 	"\x05Proxy\x12$\n" +
 	"\x05vmess\x18\x01 \x01(\v2\x0e.service.VmessR\x05vmess\x12$\n" +
 	"\x05vless\x18\x02 \x01(\v2\x0e.service.VlessR\x05vless\x12'\n" +
 	"\x06trojan\x18\x03 \x01(\v2\x0f.service.TrojanR\x06trojan\x126\n" +
 	"\vshadowsocks\x18\x04 \x01(\v2\x14.service.ShadowsocksR\vshadowsocks\x120\n" +
 	"\twireguard\x18\x05 \x01(\v2\x12.service.WireguardR\twireguard\x12-\n" +
-	"\bhysteria\x18\x06 \x01(\v2\x11.service.HysteriaR\bhysteria\"b\n" +
+	"\bhysteria\x18\x06 \x01(\v2\x11.service.HysteriaR\bhysteria\x12*\n" +
+	"\aopenvpn\x18\a \x01(\v2\x10.service.OpenvpnR\aopenvpn\"b\n" +
 	"\x04User\x12\x14\n" +
 	"\x05email\x18\x01 \x01(\tR\x05email\x12(\n" +
 	"\aproxies\x18\x02 \x01(\v2\x0e.service.ProxyR\aproxies\x12\x1a\n" +
@@ -1663,10 +1734,11 @@ const file_common_service_proto_rawDesc = "" +
 	"UsersChunk\x12#\n" +
 	"\x05users\x18\x01 \x03(\v2\r.service.UserR\x05users\x12\x14\n" +
 	"\x05index\x18\x02 \x01(\x04R\x05index\x12\x12\n" +
-	"\x04last\x18\x03 \x01(\bR\x04last*&\n" +
+	"\x04last\x18\x03 \x01(\bR\x04last*3\n" +
 	"\vBackendType\x12\b\n" +
 	"\x04XRAY\x10\x00\x12\r\n" +
-	"\tWIREGUARD\x10\x01*_\n" +
+	"\tWIREGUARD\x10\x01\x12\v\n" +
+	"\aOPENVPN\x10\x02*_\n" +
 	"\bStatType\x12\r\n" +
 	"\tOutbounds\x10\x00\x12\f\n" +
 	"\bOutbound\x10\x01\x12\f\n" +
@@ -1702,7 +1774,7 @@ func file_common_service_proto_rawDescGZIP() []byte {
 }
 
 var file_common_service_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_common_service_proto_msgTypes = make([]protoimpl.MessageInfo, 25)
+var file_common_service_proto_msgTypes = make([]protoimpl.MessageInfo, 26)
 var file_common_service_proto_goTypes = []any{
 	(BackendType)(0),                  // 0: service.BackendType
 	(StatType)(0),                     // 1: service.StatType
@@ -1726,18 +1798,19 @@ var file_common_service_proto_goTypes = []any{
 	(*Shadowsocks)(nil),               // 19: service.Shadowsocks
 	(*Wireguard)(nil),                 // 20: service.Wireguard
 	(*Hysteria)(nil),                  // 21: service.Hysteria
-	(*Proxy)(nil),                     // 22: service.Proxy
-	(*User)(nil),                      // 23: service.User
-	(*Users)(nil),                     // 24: service.Users
-	(*UsersChunk)(nil),                // 25: service.UsersChunk
-	nil,                               // 26: service.StatsOnlineIpListResponse.IpsEntry
+	(*Openvpn)(nil),                   // 22: service.Openvpn
+	(*Proxy)(nil),                     // 23: service.Proxy
+	(*User)(nil),                      // 24: service.User
+	(*Users)(nil),                     // 25: service.Users
+	(*UsersChunk)(nil),                // 26: service.UsersChunk
+	nil,                               // 27: service.StatsOnlineIpListResponse.IpsEntry
 }
 var file_common_service_proto_depIdxs = []int32{
 	0,  // 0: service.Backend.type:type_name -> service.BackendType
-	23, // 1: service.Backend.users:type_name -> service.User
+	24, // 1: service.Backend.users:type_name -> service.User
 	6,  // 2: service.StatResponse.stats:type_name -> service.Stat
 	1,  // 3: service.StatRequest.type:type_name -> service.StatType
-	26, // 4: service.StatsOnlineIpListResponse.ips:type_name -> service.StatsOnlineIpListResponse.IpsEntry
+	27, // 4: service.StatsOnlineIpListResponse.ips:type_name -> service.StatsOnlineIpListResponse.IpsEntry
 	11, // 5: service.LatencyResponse.latencies:type_name -> service.Latency
 	16, // 6: service.Proxy.vmess:type_name -> service.Vmess
 	17, // 7: service.Proxy.vless:type_name -> service.Vless
@@ -1745,40 +1818,41 @@ var file_common_service_proto_depIdxs = []int32{
 	19, // 9: service.Proxy.shadowsocks:type_name -> service.Shadowsocks
 	20, // 10: service.Proxy.wireguard:type_name -> service.Wireguard
 	21, // 11: service.Proxy.hysteria:type_name -> service.Hysteria
-	22, // 12: service.User.proxies:type_name -> service.Proxy
-	23, // 13: service.Users.users:type_name -> service.User
-	23, // 14: service.UsersChunk.users:type_name -> service.User
-	4,  // 15: service.NodeService.Start:input_type -> service.Backend
-	2,  // 16: service.NodeService.Stop:input_type -> service.Empty
-	2,  // 17: service.NodeService.GetBaseInfo:input_type -> service.Empty
-	2,  // 18: service.NodeService.GetLogs:input_type -> service.Empty
-	2,  // 19: service.NodeService.GetSystemStats:input_type -> service.Empty
-	2,  // 20: service.NodeService.GetBackendStats:input_type -> service.Empty
-	8,  // 21: service.NodeService.GetStats:input_type -> service.StatRequest
-	12, // 22: service.NodeService.GetOutboundsLatency:input_type -> service.LatencyRequest
-	8,  // 23: service.NodeService.GetUserOnlineStats:input_type -> service.StatRequest
-	8,  // 24: service.NodeService.GetUserOnlineIpListStats:input_type -> service.StatRequest
-	23, // 25: service.NodeService.SyncUser:input_type -> service.User
-	24, // 26: service.NodeService.SyncUsers:input_type -> service.Users
-	25, // 27: service.NodeService.SyncUsersChunked:input_type -> service.UsersChunk
-	3,  // 28: service.NodeService.Start:output_type -> service.BaseInfoResponse
-	2,  // 29: service.NodeService.Stop:output_type -> service.Empty
-	3,  // 30: service.NodeService.GetBaseInfo:output_type -> service.BaseInfoResponse
-	5,  // 31: service.NodeService.GetLogs:output_type -> service.Log
-	15, // 32: service.NodeService.GetSystemStats:output_type -> service.SystemStatsResponse
-	14, // 33: service.NodeService.GetBackendStats:output_type -> service.BackendStatsResponse
-	7,  // 34: service.NodeService.GetStats:output_type -> service.StatResponse
-	13, // 35: service.NodeService.GetOutboundsLatency:output_type -> service.LatencyResponse
-	9,  // 36: service.NodeService.GetUserOnlineStats:output_type -> service.OnlineStatResponse
-	10, // 37: service.NodeService.GetUserOnlineIpListStats:output_type -> service.StatsOnlineIpListResponse
-	2,  // 38: service.NodeService.SyncUser:output_type -> service.Empty
-	2,  // 39: service.NodeService.SyncUsers:output_type -> service.Empty
-	2,  // 40: service.NodeService.SyncUsersChunked:output_type -> service.Empty
-	28, // [28:41] is the sub-list for method output_type
-	15, // [15:28] is the sub-list for method input_type
-	15, // [15:15] is the sub-list for extension type_name
-	15, // [15:15] is the sub-list for extension extendee
-	0,  // [0:15] is the sub-list for field type_name
+	22, // 12: service.Proxy.openvpn:type_name -> service.Openvpn
+	23, // 13: service.User.proxies:type_name -> service.Proxy
+	24, // 14: service.Users.users:type_name -> service.User
+	24, // 15: service.UsersChunk.users:type_name -> service.User
+	4,  // 16: service.NodeService.Start:input_type -> service.Backend
+	2,  // 17: service.NodeService.Stop:input_type -> service.Empty
+	2,  // 18: service.NodeService.GetBaseInfo:input_type -> service.Empty
+	2,  // 19: service.NodeService.GetLogs:input_type -> service.Empty
+	2,  // 20: service.NodeService.GetSystemStats:input_type -> service.Empty
+	2,  // 21: service.NodeService.GetBackendStats:input_type -> service.Empty
+	8,  // 22: service.NodeService.GetStats:input_type -> service.StatRequest
+	12, // 23: service.NodeService.GetOutboundsLatency:input_type -> service.LatencyRequest
+	8,  // 24: service.NodeService.GetUserOnlineStats:input_type -> service.StatRequest
+	8,  // 25: service.NodeService.GetUserOnlineIpListStats:input_type -> service.StatRequest
+	24, // 26: service.NodeService.SyncUser:input_type -> service.User
+	25, // 27: service.NodeService.SyncUsers:input_type -> service.Users
+	26, // 28: service.NodeService.SyncUsersChunked:input_type -> service.UsersChunk
+	3,  // 29: service.NodeService.Start:output_type -> service.BaseInfoResponse
+	2,  // 30: service.NodeService.Stop:output_type -> service.Empty
+	3,  // 31: service.NodeService.GetBaseInfo:output_type -> service.BaseInfoResponse
+	5,  // 32: service.NodeService.GetLogs:output_type -> service.Log
+	15, // 33: service.NodeService.GetSystemStats:output_type -> service.SystemStatsResponse
+	14, // 34: service.NodeService.GetBackendStats:output_type -> service.BackendStatsResponse
+	7,  // 35: service.NodeService.GetStats:output_type -> service.StatResponse
+	13, // 36: service.NodeService.GetOutboundsLatency:output_type -> service.LatencyResponse
+	9,  // 37: service.NodeService.GetUserOnlineStats:output_type -> service.OnlineStatResponse
+	10, // 38: service.NodeService.GetUserOnlineIpListStats:output_type -> service.StatsOnlineIpListResponse
+	2,  // 39: service.NodeService.SyncUser:output_type -> service.Empty
+	2,  // 40: service.NodeService.SyncUsers:output_type -> service.Empty
+	2,  // 41: service.NodeService.SyncUsersChunked:output_type -> service.Empty
+	29, // [29:42] is the sub-list for method output_type
+	16, // [16:29] is the sub-list for method input_type
+	16, // [16:16] is the sub-list for extension type_name
+	16, // [16:16] is the sub-list for extension extendee
+	0,  // [0:16] is the sub-list for field type_name
 }
 
 func init() { file_common_service_proto_init() }
@@ -1792,7 +1866,7 @@ func file_common_service_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_common_service_proto_rawDesc), len(file_common_service_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   25,
+			NumMessages:   26,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
