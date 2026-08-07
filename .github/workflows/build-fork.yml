@@ -1,0 +1,68 @@
+name: Build-Fork-Image
+
+# Publishes the node image for this fork.
+#
+# docker-build-dev.yml does fire on main, but it pushes to
+# ghcr.io/pasarguard/<repo> and docker.io — the upstream org, which a fork has
+# no write access to, using Docker Hub secrets a fork does not have. So every
+# run of it fails here and nothing on main ever produced an image.
+#
+# Separate file rather than a patch to that one, so merging upstream stays a
+# clean merge. GHCR only, image path lowercased because this owner has capitals
+# and GHCR rejects them.
+
+on:
+    push:
+        branches: [main]
+    workflow_dispatch:
+
+permissions:
+    contents: read
+    packages: write
+
+jobs:
+    build:
+        runs-on: ubuntu-latest
+        steps:
+            - name: Checkout
+              uses: actions/checkout@v7
+
+            - name: Compute image name
+              id: meta
+              run: |
+                  echo "image=ghcr.io/$(echo '${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+                  echo "sha=$(echo '${{ github.sha }}' | cut -c1-7)" >> "$GITHUB_OUTPUT"
+
+            - name: Log in to GHCR
+              uses: docker/login-action@v4
+              with:
+                  registry: ghcr.io
+                  username: ${{ github.repository_owner }}
+                  password: ${{ secrets.GITHUB_TOKEN }}
+
+            - name: Set up QEMU
+              uses: docker/setup-qemu-action@v3
+
+            - name: Set up Docker Buildx
+              uses: docker/setup-buildx-action@v4
+
+            - name: Build and push
+              uses: docker/build-push-action@v7
+              with:
+                  context: .
+                  file: ./Dockerfile
+                  platforms: linux/amd64,linux/arm64
+                  push: true
+                  tags: |
+                      ${{ steps.meta.outputs.image }}:${{ steps.meta.outputs.sha }}
+                      ${{ steps.meta.outputs.image }}:main
+                      ${{ steps.meta.outputs.image }}:latest
+                  # Without these an image on the registry cannot be traced back
+                  # to a commit, which matters while nodes are being upgraded one
+                  # at a time and the reported node version does not distinguish
+                  # this build from upstream's.
+                  labels: |
+                      org.opencontainers.image.revision=${{ github.sha }}
+                      org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+                  cache-from: type=gha
+                  cache-to: type=gha,mode=max
