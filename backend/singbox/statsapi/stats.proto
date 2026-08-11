@@ -1,0 +1,34 @@
+syntax = "proto3";
+
+// The stats service sing-box exposes through experimental.v2ray_api.
+//
+// Defined here rather than reused from xray-core: sing-box registers its
+// service as v2ray.core.app.stats.command.StatsService for compatibility with
+// v2ray clients, while xray-core renamed its own. A client built against the
+// wrong name fails at call time with "unimplemented", which reads like the
+// stats API is missing rather than like a name mismatch.
+//
+// Only QueryStats is declared. It is the one call the panel needs — per-user
+// counters come back as user>>>NAME>>>traffic>>>uplink, the same shape xray
+// produces, so the existing parser handles both.
+package v2ray.core.app.stats.command;
+
+option go_package = "github.com/pasarguard/node/backend/singbox/statsapi";
+
+message Stat {
+  string name = 1;
+  int64 value = 2;
+}
+
+message QueryStatsRequest {
+  string pattern = 1;
+  bool reset = 2;
+}
+
+message QueryStatsResponse {
+  repeated Stat stat = 1;
+}
+
+service StatsService {
+  rpc QueryStats(QueryStatsRequest) returns (QueryStatsResponse) {}
+}
