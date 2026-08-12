@@ -105,6 +105,15 @@ func (s *SingBox) GetStats(ctx context.Context, request *common.StatRequest) (*c
 
 	response := &common.StatResponse{Stats: make([]*common.Stat, 0, len(stats))}
 	for _, stat := range stats {
+		// sing-box does not honour the pattern - it answers with every counter
+		// it holds regardless - so the filter has to be applied here. Without
+		// it a users request also carries the inbound's own counters, and the
+		// panel reads an inbound tag where it expects a user id: it logs
+		// "Skipping invalid UID: <tag>" and drops that poll's usage entirely,
+		// so traffic is recorded for nobody while everything looks healthy.
+		if pattern != "" && !strings.HasPrefix(stat.GetName(), pattern) {
+			continue
+		}
 		name, kind, link := splitStatName(stat.GetName())
 		response.Stats = append(response.Stats, &common.Stat{
 			Name:  name,
