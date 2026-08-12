@@ -101,7 +101,7 @@ func New(cfg *config.Config, singboxConfig *Config, users []*common.User) (*Sing
 		client:   newClashClient(singboxConfig.clashAPIAddress, singboxConfig.clashAPISecret),
 	}
 	for _, u := range users {
-		if email, auth, ok := hysteriaCredential(u); ok {
+		if email, auth, ok := s.hysteriaCredential(u); ok {
 			s.users[email] = auth
 		}
 	}
@@ -291,7 +291,7 @@ func (s *SingBox) SyncUser(_ context.Context, user *common.User) error {
 	if user == nil {
 		return errors.New("singbox: user is nil")
 	}
-	email, auth, ok := hysteriaCredential(user)
+	email, auth, ok := s.hysteriaCredential(user)
 
 	s.usersMu.Lock()
 	if ok {
@@ -326,7 +326,7 @@ func (s *SingBox) UpdateUsersAndRestart(ctx context.Context, users []*common.Use
 func (s *SingBox) replaceUsers(ctx context.Context, users []*common.User) error {
 	next := make(map[string]string, len(users))
 	for _, u := range users {
-		if email, auth, ok := hysteriaCredential(u); ok {
+		if email, auth, ok := s.hysteriaCredential(u); ok {
 			next[email] = auth
 		}
 	}
@@ -468,7 +468,7 @@ func (s *SingBox) pushUsers(ctx context.Context) error {
 // hysteriaCredential reports the user's hysteria2 auth, and whether they have
 // one at all. A user with no hysteria2 proxy simply does not belong to this
 // backend — that is routine on a node running several cores, not an error.
-func hysteriaCredential(u *common.User) (email string, auth string, ok bool) {
+func (s *SingBox) hysteriaCredential(u *common.User) (email string, auth string, ok bool) {
 	if u == nil {
 		return "", "", false
 	}
@@ -477,7 +477,31 @@ func hysteriaCredential(u *common.User) (email string, auth string, ok bool) {
 	if email == "" || auth == "" {
 		return "", "", false
 	}
+	// A user who is out of data or past their expiry keeps their credential —
+	// the panel does not erase it, it stops listing the inbounds they may use.
+	// Checking only for the credential's presence therefore left limited and
+	// expired users fully served: not merely finishing an open session, but
+	// free to open new ones. Their quota meant nothing on this backend.
+	if !s.servesAnyOf(u.GetInbounds()) {
+		return "", "", false
+	}
 	return email, auth, true
+}
+
+// servesAnyOf reports whether any of the inbounds the user is entitled to
+// belongs to this core.
+func (s *SingBox) servesAnyOf(userInbounds []string) bool {
+	if len(userInbounds) == 0 {
+		return false
+	}
+	for _, tag := range userInbounds {
+		for _, own := range s.config.inboundTags {
+			if tag == own {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (s *SingBox) emitLogf(format string, args ...any) {

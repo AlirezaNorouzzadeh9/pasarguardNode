@@ -1,6 +1,11 @@
 package singbox
 
-import "testing"
+import (
+	"context"
+	"testing"
+
+	"github.com/pasarguard/node/common"
+)
 
 // sing-box identifies a connected client by its index in the last list it was
 // given, and a live session keeps the index it authenticated with. So a user's
@@ -122,5 +127,58 @@ func TestPlaceholderPasswordsDifferPerSlot(t *testing.T) {
 	}
 	if slotNonce == "" {
 		t.Fatal("slot nonce is empty, making placeholder passwords predictable")
+	}
+}
+
+// A user who is out of data or expired keeps their credential — the panel stops
+// listing the inbounds they may use rather than erasing it. Judging membership
+// by the credential alone left them fully served, free to open new connections
+// long after their quota was gone.
+
+func sbWithTags(tags ...string) *SingBox {
+	return &SingBox{config: &Config{inboundTags: tags}, users: map[string]string{}}
+}
+
+func user(email, auth string, inbounds ...string) *common.User {
+	return &common.User{
+		Email:    email,
+		Inbounds: inbounds,
+		Proxies:  &common.Proxy{Hysteria: &common.Hysteria{Auth: auth}},
+	}
+}
+
+func TestUserWithNoInboundsIsNotServed(t *testing.T) {
+	s := sbWithTags("singbox-hy2")
+	if _, _, ok := s.hysteriaCredential(user("974", "secret")); ok {
+		t.Fatal("a user entitled to no inbound is still being served")
+	}
+}
+
+func TestUserEntitledToThisInboundIsServed(t *testing.T) {
+	s := sbWithTags("singbox-hy2")
+	email, auth, ok := s.hysteriaCredential(user("974", "secret", "singbox-hy2"))
+	if !ok || email != "974" || auth != "secret" {
+		t.Fatalf("active user rejected: %q %q %v", email, auth, ok)
+	}
+}
+
+func TestUserEntitledOnlyElsewhereIsNotServed(t *testing.T) {
+	s := sbWithTags("singbox-hy2")
+	if _, _, ok := s.hysteriaCredential(user("974", "secret", "some-xray-inbound")); ok {
+		t.Fatal("a user with no inbound on this core is being served by it")
+	}
+}
+
+func TestLimitedUserIsDroppedOnSync(t *testing.T) {
+	s := sbWithTags("singbox-hy2")
+	s.pushStop = make(chan struct{})
+	_ = s.SyncUser(context.Background(), user("974", "secret", "singbox-hy2"))
+	if _, present := s.users["974"]; !present {
+		t.Fatal("active user was not added")
+	}
+	// Same user, now limited: same credential, no inbounds.
+	_ = s.SyncUser(context.Background(), user("974", "secret"))
+	if _, present := s.users["974"]; present {
+		t.Fatal("limited user is still in the pushed set")
 	}
 }
