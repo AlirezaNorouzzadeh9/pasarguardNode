@@ -45,6 +45,12 @@ const (
 	readyTimeout = 20 * time.Second
 
 	logChanSize = 256
+
+	// How long to wait before bringing a crashed core back, and the ceiling the
+	// delay grows to. A config sing-box rejects fails identically every time, so
+	// retrying tight would only bury the reason in the log.
+	restartBackoffMin = 2 * time.Second
+	restartBackoffMax = 60 * time.Second
 )
 
 // executablePath is where the node looks for sing-box. Overridable for tests.
@@ -67,6 +73,9 @@ type SingBox struct {
 
 	mu      sync.RWMutex
 	started bool
+	// Set while a shutdown or restart was asked for, so the supervisor can
+	// tell an intentional exit from a crash and not fight a deliberate stop.
+	stopping bool
 
 	// The user set as the panel last described it, and the machinery that
 	// turns a stream of individual changes into one push.
@@ -153,6 +162,7 @@ func (s *SingBox) start() error {
 	}
 
 	s.mu.Lock()
+	s.stopping = false
 	s.process = cmd
 	s.cancel = cancel
 	s.waitDone = make(chan struct{})
@@ -165,7 +175,14 @@ func (s *SingBox) start() error {
 		s.mu.Lock()
 		s.started = false
 		close(s.waitDone)
+		asked := s.stopping
 		s.mu.Unlock()
+		// A core that dies on its own used to stay dead: the node kept reporting
+		// itself connected while every user on this core was cut off, and only a
+		// manual restart brought it back.
+		if !asked {
+			go s.superviseRestart()
+		}
 	}()
 
 	if err := s.waitReady(ctx); err != nil {
@@ -261,6 +278,7 @@ func (s *SingBox) Shutdown() {
 	done := s.waitDone
 	s.cancel = nil
 	s.started = false
+	s.stopping = true // tells the supervisor this exit was asked for
 	s.mu.Unlock()
 
 	s.usersMu.Lock()
@@ -281,6 +299,61 @@ func (s *SingBox) Shutdown() {
 	}
 	if s.stats != nil {
 		s.stats.close()
+	}
+}
+
+// superviseRestart brings the core back after it exits on its own.
+//
+// Backed off rather than retried tight: a config sing-box refuses will fail
+// every time, and hammering it turns one broken core into a busy loop that
+// buries the reason in the log. The delay grows to a minute and stays there, so
+// a core that is down for an external reason — a port taken, a certificate file
+// briefly missing — recovers on its own once that clears.
+//
+// Users are pushed again after each successful start, because the process comes
+// up with only whatever the config file carried, which is none of them.
+func (s *SingBox) superviseRestart() {
+	delay := restartBackoffMin
+	for {
+		s.mu.RLock()
+		stopping := s.stopping
+		stop := s.pushStop
+		s.mu.RUnlock()
+		if stopping {
+			return
+		}
+
+		select {
+		case <-stop:
+			return
+		case <-time.After(delay):
+		}
+
+		s.mu.RLock()
+		stopping = s.stopping
+		s.mu.RUnlock()
+		if stopping {
+			return
+		}
+
+		s.emitLogf("core exited on its own; restarting")
+		if err := s.start(); err != nil {
+			s.emitLogf("restart failed: %v", err)
+			if delay < restartBackoffMax {
+				delay *= 2
+				if delay > restartBackoffMax {
+					delay = restartBackoffMax
+				}
+			}
+			continue
+		}
+		if err := s.pushUsers(context.Background()); err != nil {
+			// The core is up but has nobody in it, which serves no one. Better
+			// to fail loudly here than to look healthy and refuse every user.
+			s.emitLogf("restarted, but pushing users failed: %v", err)
+		}
+		s.emitLogf("core restarted")
+		return
 	}
 }
 
