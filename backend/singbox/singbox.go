@@ -15,6 +15,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -71,7 +73,21 @@ type SingBox struct {
 	usersMu   sync.Mutex
 	users     map[string]string // email -> hysteria2 auth password
 	pushTimer *time.Timer
-	pushStop  chan struct{}
+
+	// Which position in the pushed list belongs to which user.
+	//
+	// sing-box identifies an authenticated client by its index in the list it
+	// was last given, and a live session keeps the index it got when it
+	// connected. So the position a user occupies is their identity for as long
+	// as they stay connected, and it has to survive every later push.
+	//
+	// Rebuilding the list from the map instead — which is what this used to do
+	// — reordered it on every change, because Go randomises map iteration.
+	// A session that had authenticated as index 4 then found index 4 belonging
+	// to somebody else, and its traffic was billed to that person.
+	slots []string // index -> email; "" marks a freed slot
+
+	pushStop chan struct{}
 }
 
 // New starts sing-box with the given config and user set.
@@ -347,12 +363,94 @@ func (s *SingBox) pushSoon() {
 	})
 }
 
+// buildPayloadLocked lays the current user set out over stable positions.
+//
+// A user keeps the slot they were first given for as long as they exist, and a
+// departed user's slot is held open rather than closed up, because closing it
+// would shift everyone after it — and every connected session identified by one
+// of those positions would start being billed to its new occupant.
+//
+// A freed slot cannot simply be omitted: the list is positional, so the hole
+// has to be filled. It gets an entry whose password is unusable, which keeps
+// the arithmetic intact without leaving a credential anyone can authenticate
+// with. Trailing holes are trimmed, so a node that loses users does not carry
+// dead weight forever.
+//
+// Caller holds usersMu.
+func (s *SingBox) buildPayloadLocked() []clashUser {
+	placed := make(map[string]int, len(s.users))
+	for index, email := range s.slots {
+		if email == "" {
+			continue
+		}
+		if _, still := s.users[email]; still {
+			placed[email] = index
+			continue
+		}
+		s.slots[index] = "" // gone; hold the position open
+	}
+
+	// New users take the lowest free slot before extending the list, so the
+	// list stays as short as the user count allows.
+	free := 0
+	for email := range s.users {
+		if _, done := placed[email]; done {
+			continue
+		}
+		for free < len(s.slots) && s.slots[free] != "" {
+			free++
+		}
+		if free < len(s.slots) {
+			s.slots[free] = email
+		} else {
+			s.slots = append(s.slots, email)
+		}
+		placed[email] = free
+		free++
+	}
+
+	for len(s.slots) > 0 && s.slots[len(s.slots)-1] == "" {
+		s.slots = s.slots[:len(s.slots)-1]
+	}
+
+	payload := make([]clashUser, len(s.slots))
+	for index, email := range s.slots {
+		if email == "" {
+			// Occupies the position without being usable: the name is not a
+			// user id the panel can resolve, and the password is not one this
+			// node ever hands out.
+			payload[index] = clashUser{Name: freeSlotName, Password: freeSlotPassword(index)}
+			continue
+		}
+		payload[index] = clashUser{Name: email, Password: s.users[email]}
+	}
+	return payload
+}
+
+// A name the panel will never match to a user, so traffic that somehow lands
+// here is dropped rather than billed to someone.
+const freeSlotName = "-"
+
+// Random per process: a placeholder password must not be predictable, or it
+// becomes a credential anyone who reads this source can use.
+var slotNonce = newSlotNonce()
+
+func newSlotNonce() string {
+	buf := make([]byte, 16)
+	if _, err := rand.Read(buf); err != nil {
+		// Never expected; a fixed string here would be a shared password.
+		panic("singbox: cannot read random bytes for slot placeholder: " + err.Error())
+	}
+	return hex.EncodeToString(buf)
+}
+
+func freeSlotPassword(index int) string {
+	return fmt.Sprintf("pg-unused-slot-%d-%s", index, slotNonce)
+}
+
 func (s *SingBox) pushUsers(ctx context.Context) error {
 	s.usersMu.Lock()
-	payload := make([]clashUser, 0, len(s.users))
-	for email, auth := range s.users {
-		payload = append(payload, clashUser{Name: email, Password: auth})
-	}
+	payload := s.buildPayloadLocked()
 	s.usersMu.Unlock()
 
 	var failures []string
