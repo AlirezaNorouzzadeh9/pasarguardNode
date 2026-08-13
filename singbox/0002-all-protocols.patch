@@ -1,0 +1,532 @@
+From 4736176f17b2734d372591f048c674b1ebccea85 Mon Sep 17 00:00:00 2001
+From: pasarguard <dev@pasarguard.local>
+Date: Thu, 13 Aug 2026 04:11:10 +0000
+Subject: [PATCH 2/2] feat(clashapi): let every supported protocol take users
+ at runtime
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The endpoint was written generic; only its dispatch knew hysteria2. The other
+six inbounds could not have their users replaced at all, because none of them
+exposed the UpdateUsers their service already had — it was called once, inside
+the constructor, and never again.
+
+vless, vmess, trojan, tuic and hysteria gain one; shadowsocks already had it.
+
+Each carries the same hazard hysteria2 did: the inbound keeps its own copy of
+the user list and resolves a connecting client's name by indexing it with the id
+the service returns. Those are two halves of one fact. Swapping them separately
+bills traffic arriving mid-swap to whoever now sits at that index — which is
+exactly what happened in testing, where one user's download was recorded against
+a stranger. Every patch swaps both under a single write lock, and bounds-checks
+the lookup: an id can arrive from a connection authenticated against a longer
+list, and indexing past the end panics the process.
+
+Three things only the compiler caught, all in tuic: it names its service field
+`server` where the others use `service`, its UpdateUsers takes [][16]byte rather
+than []uuid.UUID, and it rejects an empty uuid before parsing — a check the
+first draft dropped.
+---
+ experimental/clashapi/inbound_users.go | 50 ++++++++++++++++-------
+ protocol/hysteria/inbound.go           | 44 +++++++++++++++++++-
+ protocol/trojan/inbound.go             | 38 ++++++++++++++++-
+ protocol/tuic/inbound.go               | 48 +++++++++++++++++++++-
+ protocol/vless/inbound.go              | 54 ++++++++++++++++++++-----
+ protocol/vmess/inbound.go              | 56 +++++++++++++++++++++-----
+ 6 files changed, 250 insertions(+), 40 deletions(-)
+
+diff --git a/experimental/clashapi/inbound_users.go b/experimental/clashapi/inbound_users.go
+index 6242eb4..880a4be 100644
+--- a/experimental/clashapi/inbound_users.go
++++ b/experimental/clashapi/inbound_users.go
+@@ -25,10 +25,6 @@ import (
+ // userUpdater is implemented by inbounds that can swap their user set while
+ // running. The concrete user type differs per protocol, so each implementation
+ // decodes the raw list itself.
+-type hysteria2UserUpdater interface {
+-	UpdateUsers(users []option.Hysteria2User) error
+-}
+-
+ type updateUsersRequest struct {
+ 	Users json.RawMessage `json:"users"`
+ }
+@@ -82,19 +78,45 @@ func updateInboundUsers(server *Server) http.HandlerFunc {
+ }
+ 
+ // updateUsers decodes the raw list into the type the inbound expects and
+-// applies it. Protocols are added here, one case each.
++// applies it. One case per protocol; the body is always the same shape as that
++// inbound's own users block in the config, so whatever writes the config can
++// drive this too.
+ func updateUsers(inbound adapter.Inbound, raw json.RawMessage) (int, error) {
+ 	switch updater := inbound.(type) {
+-	case hysteria2UserUpdater:
+-		var users []option.Hysteria2User
+-		if err := json.Unmarshal(raw, &users); err != nil {
+-			return 0, err
+-		}
+-		if err := updater.UpdateUsers(users); err != nil {
+-			return 0, err
+-		}
+-		return len(users), nil
++	case interface {
++		UpdateUsers([]option.Hysteria2User) error
++	}:
++		return applyUsers[option.Hysteria2User](raw, updater.UpdateUsers)
++	case interface {
++		UpdateUsers([]option.HysteriaUser) error
++	}:
++		return applyUsers[option.HysteriaUser](raw, updater.UpdateUsers)
++	case interface {
++		UpdateUsers([]option.VLESSUser) error
++	}:
++		return applyUsers[option.VLESSUser](raw, updater.UpdateUsers)
++	case interface {
++		UpdateUsers([]option.VMessUser) error
++	}:
++		return applyUsers[option.VMessUser](raw, updater.UpdateUsers)
++	case interface {
++		UpdateUsers([]option.TrojanUser) error
++	}:
++		return applyUsers[option.TrojanUser](raw, updater.UpdateUsers)
++	case interface{ UpdateUsers([]option.TUICUser) error }:
++		return applyUsers[option.TUICUser](raw, updater.UpdateUsers)
+ 	default:
+ 		return 0, newError("inbound does not support updating users: " + inbound.Type())
+ 	}
+ }
++
++func applyUsers[T any](raw json.RawMessage, apply func([]T) error) (int, error) {
++	var users []T
++	if err := json.Unmarshal(raw, &users); err != nil {
++		return 0, err
++	}
++	if err := apply(users); err != nil {
++		return 0, err
++	}
++	return len(users), nil
++}
+diff --git a/protocol/hysteria/inbound.go b/protocol/hysteria/inbound.go
+index 98d7cb8..6ee4ead 100644
+--- a/protocol/hysteria/inbound.go
++++ b/protocol/hysteria/inbound.go
+@@ -3,6 +3,7 @@ package hysteria
+ import (
+ 	"context"
+ 	"net"
++	"sync"
+ 	"time"
+ 
+ 	"github.com/sagernet/sing-box/adapter"
+@@ -30,6 +31,7 @@ type Inbound struct {
+ 	listener     *listener.Listener
+ 	tlsConfig    tls.ServerConfig
+ 	service      *hysteria.Service[int]
++	userAccess   sync.RWMutex
+ 	userNameList []string
+ }
+ 
+@@ -123,7 +125,7 @@ func (h *Inbound) NewConnectionEx(ctx context.Context, conn net.Conn, source M.S
+ 	metadata.Destination = destination
+ 	h.logger.InfoContext(ctx, "inbound connection from ", metadata.Source)
+ 	userID, _ := auth.UserFromContext[int](ctx)
+-	if userName := h.userNameList[userID]; userName != "" {
++	if userName := h.userName(userID); userName != "" {
+ 		metadata.User = userName
+ 		h.logger.InfoContext(ctx, "[", userName, "] inbound connection to ", metadata.Destination)
+ 	} else {
+@@ -145,7 +147,7 @@ func (h *Inbound) NewPacketConnectionEx(ctx context.Context, conn N.PacketConn,
+ 	metadata.Destination = destination
+ 	h.logger.InfoContext(ctx, "inbound packet connection from ", metadata.Source)
+ 	userID, _ := auth.UserFromContext[int](ctx)
+-	if userName := h.userNameList[userID]; userName != "" {
++	if userName := h.userName(userID); userName != "" {
+ 		metadata.User = userName
+ 		h.logger.InfoContext(ctx, "[", userName, "] inbound packet connection to ", metadata.Destination)
+ 	} else {
+@@ -178,3 +180,41 @@ func (h *Inbound) Close() error {
+ 		common.PtrOrNil(h.service),
+ 	)
+ }
++
++// UpdateUsers replaces this inbound's user set while it is running.
++//
++// userNameList is indexed by the id the service returns, so it and the service
++// table are swapped under one write lock; updating them separately bills
++// traffic arriving mid-swap to the wrong user.
++func (h *Inbound) UpdateUsers(users []option.HysteriaUser) error {
++	userList := make([]int, 0, len(users))
++	userNameList := make([]string, 0, len(users))
++	userPasswordList := make([]string, 0, len(users))
++	for index, user := range users {
++		// AuthString wins over Auth, the same precedence the constructor uses.
++		password := user.AuthString
++		if password == "" {
++			password = string(user.Auth)
++		}
++		userList = append(userList, index)
++		userNameList = append(userNameList, user.Name)
++		userPasswordList = append(userPasswordList, password)
++	}
++	h.userAccess.Lock()
++	h.service.UpdateUsers(userList, userPasswordList)
++	h.userNameList = userNameList
++	h.userAccess.Unlock()
++	return nil
++}
++
++// userName resolves the name behind a service user id. Bounds-checked because
++// the id can arrive from a connection authenticated against a longer list, and
++// indexing past the end would panic the process.
++func (h *Inbound) userName(index int) string {
++	h.userAccess.RLock()
++	defer h.userAccess.RUnlock()
++	if index < 0 || index >= len(h.userNameList) {
++		return ""
++	}
++	return h.userNameList[index]
++}
+diff --git a/protocol/trojan/inbound.go b/protocol/trojan/inbound.go
+index 6e11c08..f1c6871 100644
+--- a/protocol/trojan/inbound.go
++++ b/protocol/trojan/inbound.go
+@@ -4,6 +4,7 @@ import (
+ 	"context"
+ 	"net"
+ 	"os"
++	"sync"
+ 
+ 	"github.com/sagernet/sing-box/adapter"
+ 	"github.com/sagernet/sing-box/adapter/inbound"
+@@ -35,6 +36,7 @@ type Inbound struct {
+ 	logger                   log.ContextLogger
+ 	listener                 *listener.Listener
+ 	service                  *trojan.Service[int]
++	userAccess               sync.RWMutex
+ 	users                    []option.TrojanUser
+ 	tlsConfig                tls.ServerConfig
+ 	fallbackAddr             M.Socksaddr
+@@ -189,7 +191,7 @@ func (h *Inbound) newConnection(ctx context.Context, conn net.Conn, metadata ada
+ 		N.CloseOnHandshakeFailure(conn, onClose, os.ErrInvalid)
+ 		return
+ 	}
+-	user := h.users[userIndex].Name
++	user := h.userName(userIndex)
+ 	if user == "" {
+ 		user = F.ToString(userIndex)
+ 	} else {
+@@ -207,7 +209,7 @@ func (h *Inbound) newPacketConnection(ctx context.Context, conn N.PacketConn, me
+ 		N.CloseOnHandshakeFailure(conn, onClose, os.ErrInvalid)
+ 		return
+ 	}
+-	user := h.users[userIndex].Name
++	user := h.userName(userIndex)
+ 	if user == "" {
+ 		user = F.ToString(userIndex)
+ 	} else {
+@@ -260,3 +262,35 @@ func (h *inboundTransportHandler) NewConnectionEx(ctx context.Context, conn net.
+ 	h.logger.InfoContext(ctx, "inbound connection from ", metadata.Source)
+ 	(*Inbound)(h).NewConnectionEx(ctx, conn, metadata, onClose)
+ }
++
++// UpdateUsers replaces this inbound's user set while it is running.
++//
++// The service's credential table and the local user list are swapped under one
++// write lock. That list is indexed by the id the service returns, so updating
++// them separately bills traffic arriving mid-swap to whoever now sits at the
++// index the connection authenticated with.
++func (h *Inbound) UpdateUsers(users []option.TrojanUser) error {
++	if err := h.service.UpdateUsers(common.MapIndexed(users, func(index int, it option.TrojanUser) int {
++		return index
++	}), common.Map(users, func(it option.TrojanUser) string {
++		return it.Password
++	})); err != nil {
++		return err
++	}
++	h.userAccess.Lock()
++	h.users = users
++	h.userAccess.Unlock()
++	return nil
++}
++
++// userName resolves the name behind a service user id. Bounds-checked because
++// the id can arrive from a connection authenticated against a longer list, and
++// indexing past the end would panic the process.
++func (h *Inbound) userName(index int) string {
++	h.userAccess.RLock()
++	defer h.userAccess.RUnlock()
++	if index < 0 || index >= len(h.users) {
++		return ""
++	}
++	return h.users[index].Name
++}
+diff --git a/protocol/tuic/inbound.go b/protocol/tuic/inbound.go
+index 600c7f9..aeac8f1 100644
+--- a/protocol/tuic/inbound.go
++++ b/protocol/tuic/inbound.go
+@@ -3,6 +3,7 @@ package tuic
+ import (
+ 	"context"
+ 	"net"
++	"sync"
+ 	"time"
+ 
+ 	"github.com/sagernet/sing-box/adapter"
+@@ -34,6 +35,7 @@ type Inbound struct {
+ 	listener     *listener.Listener
+ 	tlsConfig    tls.ServerConfig
+ 	server       *tuic.Service[int]
++	userAccess   sync.RWMutex
+ 	userNameList []string
+ }
+ 
+@@ -113,7 +115,7 @@ func (h *Inbound) NewConnectionEx(ctx context.Context, conn net.Conn, source M.S
+ 	metadata.Destination = destination
+ 	h.logger.InfoContext(ctx, "inbound connection from ", metadata.Source)
+ 	userID, _ := auth.UserFromContext[int](ctx)
+-	if userName := h.userNameList[userID]; userName != "" {
++	if userName := h.userName(userID); userName != "" {
+ 		metadata.User = userName
+ 		h.logger.InfoContext(ctx, "[", userName, "] inbound connection to ", metadata.Destination)
+ 	} else {
+@@ -135,7 +137,7 @@ func (h *Inbound) NewPacketConnectionEx(ctx context.Context, conn N.PacketConn,
+ 	metadata.Destination = destination
+ 	h.logger.InfoContext(ctx, "inbound packet connection from ", metadata.Source)
+ 	userID, _ := auth.UserFromContext[int](ctx)
+-	if userName := h.userNameList[userID]; userName != "" {
++	if userName := h.userName(userID); userName != "" {
+ 		metadata.User = userName
+ 		h.logger.InfoContext(ctx, "[", userName, "] inbound packet connection to ", metadata.Destination)
+ 	} else {
+@@ -168,3 +170,45 @@ func (h *Inbound) Close() error {
+ 		common.PtrOrNil(h.server),
+ 	)
+ }
++
++// UpdateUsers replaces this inbound's user set while it is running.
++//
++// userNameList is indexed by the id the service returns, so it and the service
++// table are swapped under one write lock; updating them separately bills
++// traffic arriving mid-swap to the wrong user.
++func (h *Inbound) UpdateUsers(users []option.TUICUser) error {
++	userList := make([]int, 0, len(users))
++	userNameList := make([]string, 0, len(users))
++	userUUIDList := make([][16]byte, 0, len(users))
++	userPasswordList := make([]string, 0, len(users))
++	for index, user := range users {
++		if user.UUID == "" {
++			return E.New("missing uuid for user ", index)
++		}
++		parsed, err := uuid.FromString(user.UUID)
++		if err != nil {
++			return E.Cause(err, "invalid uuid for user ", index)
++		}
++		userList = append(userList, index)
++		userNameList = append(userNameList, user.Name)
++		userUUIDList = append(userUUIDList, parsed)
++		userPasswordList = append(userPasswordList, user.Password)
++	}
++	h.userAccess.Lock()
++	h.server.UpdateUsers(userList, userUUIDList, userPasswordList)
++	h.userNameList = userNameList
++	h.userAccess.Unlock()
++	return nil
++}
++
++// userName resolves the name behind a service user id. Bounds-checked because
++// the id can arrive from a connection authenticated against a longer list, and
++// indexing past the end would panic the process.
++func (h *Inbound) userName(index int) string {
++	h.userAccess.RLock()
++	defer h.userAccess.RUnlock()
++	if index < 0 || index >= len(h.userNameList) {
++		return ""
++	}
++	return h.userNameList[index]
++}
+diff --git a/protocol/vless/inbound.go b/protocol/vless/inbound.go
+index 75cd412..a85fdc8 100644
+--- a/protocol/vless/inbound.go
++++ b/protocol/vless/inbound.go
+@@ -4,6 +4,7 @@ import (
+ 	"context"
+ 	"net"
+ 	"os"
++	"sync"
+ 
+ 	"github.com/sagernet/sing-box/adapter"
+ 	"github.com/sagernet/sing-box/adapter/inbound"
+@@ -35,14 +36,15 @@ var _ adapter.TCPInjectableInbound = (*Inbound)(nil)
+ 
+ type Inbound struct {
+ 	inbound.Adapter
+-	ctx       context.Context
+-	router    adapter.ConnectionRouterEx
+-	logger    logger.ContextLogger
+-	listener  *listener.Listener
+-	users     []option.VLESSUser
+-	service   *vless.Service[int]
+-	tlsConfig tls.ServerConfig
+-	transport adapter.V2RayServerTransport
++	ctx        context.Context
++	router     adapter.ConnectionRouterEx
++	logger     logger.ContextLogger
++	listener   *listener.Listener
++	userAccess sync.RWMutex
++	users      []option.VLESSUser
++	service    *vless.Service[int]
++	tlsConfig  tls.ServerConfig
++	transport  adapter.V2RayServerTransport
+ }
+ 
+ func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLogger, tag string, options option.VLESSInboundOptions) (adapter.Inbound, error) {
+@@ -172,7 +174,7 @@ func (h *Inbound) newConnectionEx(ctx context.Context, conn net.Conn, metadata a
+ 		N.CloseOnHandshakeFailure(conn, onClose, os.ErrInvalid)
+ 		return
+ 	}
+-	user := h.users[userIndex].Name
++	user := h.userName(userIndex)
+ 	if user == "" {
+ 		user = F.ToString(userIndex)
+ 	} else {
+@@ -190,7 +192,7 @@ func (h *Inbound) newPacketConnectionEx(ctx context.Context, conn N.PacketConn,
+ 		N.CloseOnHandshakeFailure(conn, onClose, os.ErrInvalid)
+ 		return
+ 	}
+-	user := h.users[userIndex].Name
++	user := h.userName(userIndex)
+ 	if user == "" {
+ 		user = F.ToString(userIndex)
+ 	} else {
+@@ -220,3 +222,35 @@ func (h *inboundTransportHandler) NewConnectionEx(ctx context.Context, conn net.
+ 	h.logger.InfoContext(ctx, "inbound connection from ", metadata.Source)
+ 	(*Inbound)(h).NewConnectionEx(ctx, conn, metadata, onClose)
+ }
++
++// UpdateUsers replaces this inbound's user set while it is running.
++//
++// The service's credential table and the local user list are swapped under one
++// write lock. That list is indexed by the id the service returns, so updating
++// them separately bills traffic arriving mid-swap to whoever now sits at the
++// index the connection authenticated with.
++func (h *Inbound) UpdateUsers(users []option.VLESSUser) error {
++	h.service.UpdateUsers(common.MapIndexed(users, func(index int, _ option.VLESSUser) int {
++		return index
++	}), common.Map(users, func(it option.VLESSUser) string {
++		return it.UUID
++	}), common.Map(users, func(it option.VLESSUser) string {
++		return it.Flow
++	}))
++	h.userAccess.Lock()
++	h.users = users
++	h.userAccess.Unlock()
++	return nil
++}
++
++// userName resolves the name behind a service user id. Bounds-checked because
++// the id can arrive from a connection authenticated against a longer list, and
++// indexing past the end would panic the process.
++func (h *Inbound) userName(index int) string {
++	h.userAccess.RLock()
++	defer h.userAccess.RUnlock()
++	if index < 0 || index >= len(h.users) {
++		return ""
++	}
++	return h.users[index].Name
++}
+diff --git a/protocol/vmess/inbound.go b/protocol/vmess/inbound.go
+index 4e9c763..3284baa 100644
+--- a/protocol/vmess/inbound.go
++++ b/protocol/vmess/inbound.go
+@@ -4,6 +4,7 @@ import (
+ 	"context"
+ 	"net"
+ 	"os"
++	"sync"
+ 
+ 	"github.com/sagernet/sing-box/adapter"
+ 	"github.com/sagernet/sing-box/adapter/inbound"
+@@ -36,14 +37,15 @@ var _ adapter.TCPInjectableInbound = (*Inbound)(nil)
+ 
+ type Inbound struct {
+ 	inbound.Adapter
+-	ctx       context.Context
+-	router    adapter.ConnectionRouterEx
+-	logger    logger.ContextLogger
+-	listener  *listener.Listener
+-	service   *vmess.Service[int]
+-	users     []option.VMessUser
+-	tlsConfig tls.ServerConfig
+-	transport adapter.V2RayServerTransport
++	ctx        context.Context
++	router     adapter.ConnectionRouterEx
++	logger     logger.ContextLogger
++	listener   *listener.Listener
++	service    *vmess.Service[int]
++	userAccess sync.RWMutex
++	users      []option.VMessUser
++	tlsConfig  tls.ServerConfig
++	transport  adapter.V2RayServerTransport
+ }
+ 
+ func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLogger, tag string, options option.VMessInboundOptions) (adapter.Inbound, error) {
+@@ -178,7 +180,7 @@ func (h *Inbound) newConnectionEx(ctx context.Context, conn net.Conn, metadata a
+ 		N.CloseOnHandshakeFailure(conn, onClose, os.ErrInvalid)
+ 		return
+ 	}
+-	user := h.users[userIndex].Name
++	user := h.userName(userIndex)
+ 	if user == "" {
+ 		user = F.ToString(userIndex)
+ 	} else {
+@@ -196,7 +198,7 @@ func (h *Inbound) newPacketConnectionEx(ctx context.Context, conn N.PacketConn,
+ 		N.CloseOnHandshakeFailure(conn, onClose, os.ErrInvalid)
+ 		return
+ 	}
+-	user := h.users[userIndex].Name
++	user := h.userName(userIndex)
+ 	if user == "" {
+ 		user = F.ToString(userIndex)
+ 	} else {
+@@ -226,3 +228,37 @@ func (h *inboundTransportHandler) NewConnectionEx(ctx context.Context, conn net.
+ 	h.logger.InfoContext(ctx, "inbound connection from ", metadata.Source)
+ 	(*Inbound)(h).NewConnectionEx(ctx, conn, metadata, onClose)
+ }
++
++// UpdateUsers replaces this inbound's user set while it is running.
++//
++// The service's credential table and the local user list are swapped under one
++// write lock. That list is indexed by the id the service returns, so updating
++// them separately bills traffic arriving mid-swap to whoever now sits at the
++// index the connection authenticated with.
++func (h *Inbound) UpdateUsers(users []option.VMessUser) error {
++	if err := h.service.UpdateUsers(common.MapIndexed(users, func(index int, it option.VMessUser) int {
++		return index
++	}), common.Map(users, func(it option.VMessUser) string {
++		return it.UUID
++	}), common.Map(users, func(it option.VMessUser) int {
++		return it.AlterId
++	})); err != nil {
++		return err
++	}
++	h.userAccess.Lock()
++	h.users = users
++	h.userAccess.Unlock()
++	return nil
++}
++
++// userName resolves the name behind a service user id. Bounds-checked because
++// the id can arrive from a connection authenticated against a longer list, and
++// indexing past the end would panic the process.
++func (h *Inbound) userName(index int) string {
++	h.userAccess.RLock()
++	defer h.userAccess.RUnlock()
++	if index < 0 || index >= len(h.users) {
++		return ""
++	}
++	return h.users[index].Name
++}
+-- 
+2.34.1
+

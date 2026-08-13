@@ -17,6 +17,9 @@ credential table replaced at runtime. What was missing was a way to ask for it
 from outside, and a stats service that would count a user it had not been told
 about at startup.
 
+Applied in order with `git am`. Each is a real commit, so a later sing-box
+release is a rebase rather than a re-derivation.
+
 ## `0001-runtime-users.patch`
 
 Three changes, verified end to end against a live tunnel:
@@ -38,6 +41,23 @@ Three changes, verified end to end against a live tunnel:
   once at startup, so a user created later passes traffic attributed to nobody,
   which defeats the point of adding them without a restart. This mirrors how
   xray gates user stats — a switch, not an allowlist.
+
+## `0002-all-protocols.patch`
+
+The endpoint was generic from the start; only its dispatch knew hysteria2. This
+gives vless, vmess, trojan, tuic and hysteria the same exported `UpdateUsers`
+(shadowsocks already had one) and widens the dispatch to all of them.
+
+Each carries the hazard hysteria2 did: the inbound keeps its own copy of the
+user list and resolves a connecting client's name by indexing it with the id the
+service returns. Swapping those separately bills traffic arriving mid-swap to
+whoever now sits at that index — seen in testing, where one user's download was
+recorded against a stranger. Both halves swap under one write lock, and the
+lookup is bounds-checked.
+
+tuic differs from the rest in three ways that only the compiler surfaced: its
+service field is named `server`, its UpdateUsers takes `[][16]byte` rather than
+`[]uuid.UUID`, and it rejects an empty uuid before parsing.
 
 ### Known gap
 
