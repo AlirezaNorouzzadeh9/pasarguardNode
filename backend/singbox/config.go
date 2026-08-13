@@ -25,14 +25,47 @@ type Config struct {
 	statsAddress string
 
 	// Inbounds whose users this backend owns. Users are replaced per inbound,
-	// so the tags have to be known up front.
-	inboundTags []string
+	// so the tags have to be known up front — and so does each one's protocol,
+	// because they do not all authenticate with the same kind of secret.
+	inbounds []managedInbound
 }
 
-// Inbound types this backend can hand users to. The generic
-// PUT /inbounds/{tag}/users endpoint dispatches per protocol, and only
-// hysteria2 has the exported UpdateUsers it needs so far.
-var supportedInbounds = map[string]bool{"hysteria2": true}
+// managedInbound is one inbound this backend pushes users to.
+type managedInbound struct {
+	tag  string
+	kind credentialKind
+}
+
+// credentialKind is which of a user's secrets an inbound authenticates with.
+type credentialKind int
+
+const (
+	credHysteria2 credentialKind = iota
+	credVLESS
+	credVMess
+	credTrojan
+	credShadowsocks
+)
+
+// Inbound types this backend can hand users to, and the secret each expects.
+//
+// The protocol matters, not just the tag. A vless inbound authenticates a uuid
+// and a hysteria2 inbound a password, and they are different values on the same
+// user — so pushing one user list to every inbound only works if each inbound
+// is sent the field its own protocol reads.
+//
+// Getting this wrong is silent. The core accepts a vless user whose uuid is
+// missing and stores the zero uuid; nothing is logged, the push returns 200,
+// and the inbound simply never authenticates anyone. That is exactly what this
+// backend did while it knew only hysteria2: every other inbound was left out of
+// the tag list entirely and never received a user at all.
+var supportedInbounds = map[string]credentialKind{
+	"hysteria2":   credHysteria2,
+	"vless":       credVLESS,
+	"vmess":       credVMess,
+	"trojan":      credTrojan,
+	"shadowsocks": credShadowsocks,
+}
 
 func NewConfig(configStr string) (*Config, error) {
 	if strings.TrimSpace(configStr) == "" {
@@ -97,12 +130,13 @@ func NewConfig(configStr string) (*Config, error) {
 
 	for _, inbound := range parsed.Inbounds {
 		tag := strings.TrimSpace(inbound.Tag)
-		if tag == "" || !supportedInbounds[inbound.Type] {
+		kind, supported := supportedInbounds[inbound.Type]
+		if tag == "" || !supported {
 			continue
 		}
-		cfg.inboundTags = append(cfg.inboundTags, tag)
+		cfg.inbounds = append(cfg.inbounds, managedInbound{tag: tag, kind: kind})
 	}
-	if len(cfg.inboundTags) == 0 {
+	if len(cfg.inbounds) == 0 {
 		return nil, errors.New("singbox: config has no inbound this backend can manage users for")
 	}
 
@@ -122,10 +156,10 @@ func containsWildcard(users []string) bool {
 // inbound tag is used for the same reason OpenVPN uses its inbound_tag: it is
 // what the panel names the core's inbound by, so two cores never collide.
 func (c *Config) InstanceID() string {
-	if len(c.inboundTags) == 0 {
+	if len(c.inbounds) == 0 {
 		return ""
 	}
-	return c.inboundTags[0]
+	return c.inbounds[0].tag
 }
 
 func (c *Config) String() string { return c.raw }

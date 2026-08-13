@@ -16,6 +16,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -80,7 +81,7 @@ type SingBox struct {
 	// The user set as the panel last described it, and the machinery that
 	// turns a stream of individual changes into one push.
 	usersMu   sync.Mutex
-	users     map[string]string // email -> hysteria2 auth password
+	users     map[string]userCredentials // email -> the secrets they authenticate with
 	pushTimer *time.Timer
 
 	// Which position in the pushed list belongs to which user.
@@ -105,13 +106,13 @@ func New(cfg *config.Config, singboxConfig *Config, users []*common.User) (*Sing
 		config:   singboxConfig,
 		cfg:      cfg,
 		logChan:  make(chan string, logChanSize),
-		users:    make(map[string]string, len(users)),
+		users:    make(map[string]userCredentials, len(users)),
 		pushStop: make(chan struct{}),
 		client:   newClashClient(singboxConfig.clashAPIAddress, singboxConfig.clashAPISecret),
 	}
 	for _, u := range users {
-		if email, auth, ok := s.hysteriaCredential(u); ok {
-			s.users[email] = auth
+		if email, creds, ok := s.credentials(u); ok {
+			s.users[email] = creds
 		}
 	}
 
@@ -364,14 +365,14 @@ func (s *SingBox) SyncUser(_ context.Context, user *common.User) error {
 	if user == nil {
 		return errors.New("singbox: user is nil")
 	}
-	email, auth, ok := s.hysteriaCredential(user)
+	email, creds, ok := s.credentials(user)
 
 	s.usersMu.Lock()
 	if ok {
-		s.users[email] = auth
+		s.users[email] = creds
 	} else {
-		// No hysteria2 credential means the user is not on this backend any
-		// more — either removed, or their protocol changed.
+		// No usable credential means the user is not on this backend any more —
+		// either removed, or no longer entitled to an inbound it serves.
 		delete(s.users, user.GetEmail())
 	}
 	s.usersMu.Unlock()
@@ -397,10 +398,10 @@ func (s *SingBox) UpdateUsersAndRestart(ctx context.Context, users []*common.Use
 }
 
 func (s *SingBox) replaceUsers(ctx context.Context, users []*common.User) error {
-	next := make(map[string]string, len(users))
+	next := make(map[string]userCredentials, len(users))
 	for _, u := range users {
-		if email, auth, ok := s.hysteriaCredential(u); ok {
-			next[email] = auth
+		if email, creds, ok := s.credentials(u); ok {
+			next[email] = creds
 		}
 	}
 	s.usersMu.Lock()
@@ -450,7 +451,7 @@ func (s *SingBox) pushSoon() {
 // dead weight forever.
 //
 // Caller holds usersMu.
-func (s *SingBox) buildPayloadLocked() []clashUser {
+func (s *SingBox) reconcileSlotsLocked() {
 	placed := make(map[string]int, len(s.users))
 	for index, email := range s.slots {
 		if email == "" {
@@ -485,17 +486,35 @@ func (s *SingBox) buildPayloadLocked() []clashUser {
 	for len(s.slots) > 0 && s.slots[len(s.slots)-1] == "" {
 		s.slots = s.slots[:len(s.slots)-1]
 	}
+}
 
+// payloadForLocked renders the slot table as one inbound's user list.
+//
+// Each inbound gets its own rendering of the same slots, because the secret
+// differs per protocol: a vless inbound is sent uuids and a hysteria2 inbound
+// passwords. The positions stay identical across inbounds, which is what keeps
+// a live session's index meaning the same user everywhere.
+//
+// A user entitled to this core but without a secret for this particular
+// protocol is not dropped — that would shift everyone below them. They hold
+// their position with an unusable placeholder, exactly as a freed slot does.
+//
+// Caller holds usersMu.
+func (s *SingBox) payloadForLocked(kind credentialKind) []clashUser {
 	payload := make([]clashUser, len(s.slots))
 	for index, email := range s.slots {
-		if email == "" {
+		secret := ""
+		if email != "" {
+			secret = s.users[email].secret(kind)
+		}
+		if secret == "" {
 			// Occupies the position without being usable: the name is not a
-			// user id the panel can resolve, and the password is not one this
+			// user id the panel can resolve, and the secret is not one this
 			// node ever hands out.
-			payload[index] = clashUser{Name: freeSlotName, Password: freeSlotPassword(index)}
+			payload[index] = newClashUser(freeSlotName, kind, freeSlotSecret(kind, index))
 			continue
 		}
-		payload[index] = clashUser{Name: email, Password: s.users[email]}
+		payload[index] = newClashUser(email, kind, secret)
 	}
 	return payload
 }
@@ -517,19 +536,51 @@ func newSlotNonce() string {
 	return hex.EncodeToString(buf)
 }
 
-func freeSlotPassword(index int) string {
-	return fmt.Sprintf("pg-unused-slot-%d-%s", index, slotNonce)
+// freeSlotSecret is a secret nobody can present, in the shape the protocol
+// expects.
+//
+// The shape matters. A uuid protocol will not refuse a placeholder that is not
+// a uuid — it stores the zero uuid instead, and every placeholder then shares
+// one well-known credential that authenticates as whoever holds that slot. So
+// uuid inbounds get a derived uuid rather than a string that merely looks
+// unusable.
+//
+// Derived rather than random per call so a slot's placeholder does not change
+// on every push, and derived from the per-process nonce so it cannot be
+// guessed from this source.
+func freeSlotSecret(kind credentialKind, index int) string {
+	if !usesUUID(kind) {
+		return fmt.Sprintf("pg-unused-slot-%d-%s", index, slotNonce)
+	}
+	sum := sha256.Sum256([]byte(fmt.Sprintf("pg-unused-slot-%d-%s", index, slotNonce)))
+	var id [16]byte
+	copy(id[:], sum[:16])
+	id[6] = (id[6] & 0x0f) | 0x40 // version 4
+	id[8] = (id[8] & 0x3f) | 0x80 // RFC 4122 variant
+	return fmt.Sprintf("%x-%x-%x-%x-%x", id[0:4], id[4:6], id[6:8], id[8:10], id[10:16])
+}
+
+func usesUUID(kind credentialKind) bool {
+	return kind == credVLESS || kind == credVMess
 }
 
 func (s *SingBox) pushUsers(ctx context.Context) error {
 	s.usersMu.Lock()
-	payload := s.buildPayloadLocked()
+	s.reconcileSlotsLocked()
+	// Inbounds of the same protocol share one rendering; a core with four vless
+	// inbounds should not build the same list four times.
+	payloads := make(map[credentialKind][]clashUser, len(s.config.inbounds))
+	for _, in := range s.config.inbounds {
+		if _, done := payloads[in.kind]; !done {
+			payloads[in.kind] = s.payloadForLocked(in.kind)
+		}
+	}
 	s.usersMu.Unlock()
 
 	var failures []string
-	for _, tag := range s.config.inboundTags {
-		if err := s.client.replaceUsers(ctx, tag, payload); err != nil {
-			failures = append(failures, fmt.Sprintf("%s: %v", tag, err))
+	for _, in := range s.config.inbounds {
+		if err := s.client.replaceUsers(ctx, in.tag, payloads[in.kind]); err != nil {
+			failures = append(failures, fmt.Sprintf("%s: %v", in.tag, err))
 		}
 	}
 	if len(failures) > 0 {
@@ -538,27 +589,74 @@ func (s *SingBox) pushUsers(ctx context.Context) error {
 	return nil
 }
 
-// hysteriaCredential reports the user's hysteria2 auth, and whether they have
-// one at all. A user with no hysteria2 proxy simply does not belong to this
-// backend — that is routine on a node running several cores, not an error.
-func (s *SingBox) hysteriaCredential(u *common.User) (email string, auth string, ok bool) {
+// userCredentials is the secrets a user authenticates with, one per protocol
+// this backend can serve.
+//
+// A user commonly has several. The same person may be entitled to a hysteria2
+// inbound and a vless inbound on one core, and those are two different secrets
+// — not one secret reachable two ways. Keeping only the hysteria2 one, as this
+// backend originally did, left every other protocol with nothing to send.
+type userCredentials struct {
+	hysteria2   string
+	vlessUUID   string
+	vmessUUID   string
+	trojanPass  string
+	shadowsocks string
+}
+
+func (c userCredentials) secret(kind credentialKind) string {
+	switch kind {
+	case credHysteria2:
+		return c.hysteria2
+	case credVLESS:
+		return c.vlessUUID
+	case credVMess:
+		return c.vmessUUID
+	case credTrojan:
+		return c.trojanPass
+	case credShadowsocks:
+		return c.shadowsocks
+	}
+	return ""
+}
+
+func (c userCredentials) empty() bool {
+	return c.hysteria2 == "" && c.vlessUUID == "" && c.vmessUUID == "" &&
+		c.trojanPass == "" && c.shadowsocks == ""
+}
+
+// credentials reports the secrets this user can present, and whether they
+// belong on this backend at all. A user with nothing usable simply is not on
+// this core — routine on a node running several, not an error.
+func (s *SingBox) credentials(u *common.User) (email string, creds userCredentials, ok bool) {
 	if u == nil {
-		return "", "", false
+		return "", userCredentials{}, false
 	}
 	email = strings.TrimSpace(u.GetEmail())
-	auth = strings.TrimSpace(u.GetProxies().GetHysteria().GetAuth())
-	if email == "" || auth == "" {
-		return "", "", false
+	if email == "" {
+		return "", userCredentials{}, false
 	}
-	// A user who is out of data or past their expiry keeps their credential —
-	// the panel does not erase it, it stops listing the inbounds they may use.
-	// Checking only for the credential's presence therefore left limited and
+	// A user who is out of data or past their expiry keeps their credentials —
+	// the panel does not erase them, it stops listing the inbounds they may
+	// use. Checking only for a credential's presence therefore left limited and
 	// expired users fully served: not merely finishing an open session, but
 	// free to open new ones. Their quota meant nothing on this backend.
 	if !s.servesAnyOf(u.GetInbounds()) {
-		return "", "", false
+		return "", userCredentials{}, false
 	}
-	return email, auth, true
+
+	proxies := u.GetProxies()
+	creds = userCredentials{
+		hysteria2:   strings.TrimSpace(proxies.GetHysteria().GetAuth()),
+		vlessUUID:   strings.TrimSpace(proxies.GetVless().GetId()),
+		vmessUUID:   strings.TrimSpace(proxies.GetVmess().GetId()),
+		trojanPass:  strings.TrimSpace(proxies.GetTrojan().GetPassword()),
+		shadowsocks: strings.TrimSpace(proxies.GetShadowsocks().GetPassword()),
+	}
+	if creds.empty() {
+		return "", userCredentials{}, false
+	}
+	return email, creds, true
 }
 
 // servesAnyOf reports whether any of the inbounds the user is entitled to
@@ -568,8 +666,8 @@ func (s *SingBox) servesAnyOf(userInbounds []string) bool {
 		return false
 	}
 	for _, tag := range userInbounds {
-		for _, own := range s.config.inboundTags {
-			if tag == own {
+		for _, own := range s.config.inbounds {
+			if tag == own.tag {
 				return true
 			}
 		}
@@ -600,9 +698,22 @@ func sanitise(name string) string {
 
 // ------------------------------------------------------------------ clash_api
 
+// clashUser is one entry of an inbound's user list, in sing-box's own shape.
+//
+// Which field carries the secret depends on the protocol, and the unused one is
+// omitted rather than sent empty: sing-box accepts a vless user with a blank
+// uuid and stores the zero uuid instead of refusing it.
 type clashUser struct {
 	Name     string `json:"name"`
-	Password string `json:"password"`
+	Password string `json:"password,omitempty"`
+	UUID     string `json:"uuid,omitempty"`
+}
+
+func newClashUser(name string, kind credentialKind, secret string) clashUser {
+	if usesUUID(kind) {
+		return clashUser{Name: name, UUID: secret}
+	}
+	return clashUser{Name: name, Password: secret}
 }
 
 type clashClient struct {
