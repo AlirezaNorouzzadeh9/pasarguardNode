@@ -77,6 +77,10 @@ type SingBox struct {
 	// Set while a shutdown or restart was asked for, so the supervisor can
 	// tell an intentional exit from a crash and not fight a deliberate stop.
 	stopping bool
+	// Whether a restart supervisor is already running. Without it every exit
+	// starts another, and since each failed restart produces another exit they
+	// accumulate rather than replace one another.
+	supervising bool
 
 	// The user set as the panel last described it, and the machinery that
 	// turns a stream of individual changes into one push.
@@ -168,11 +172,21 @@ func (s *SingBox) start() error {
 		return fmt.Errorf("singbox: start process: %w", err)
 	}
 
+	// Held locally as well as on the struct. The watcher below closes this
+	// channel, not s.waitDone: by the time a process exits, a later start may
+	// already have put its own channel on the struct, and closing that one
+	// leaves it to be closed a second time when that process exits too. A
+	// double close panics, and a panic in a goroutine takes the whole node down
+	// — xray, WireGuard and OpenVPN with it — for a core that merely failed to
+	// come up. Seen on a live node: a sing-box core whose certificate was
+	// missing crash-looped the process every two minutes.
+	done := make(chan struct{})
+
 	s.mu.Lock()
 	s.stopping = false
 	s.process = cmd
 	s.cancel = cancel
-	s.waitDone = make(chan struct{})
+	s.waitDone = done
 	s.startTime = time.Now()
 	s.mu.Unlock()
 
@@ -181,13 +195,21 @@ func (s *SingBox) start() error {
 		_ = cmd.Wait()
 		s.mu.Lock()
 		s.started = false
-		close(s.waitDone)
 		asked := s.stopping
+		// Only the supervisor this exit belongs to may be started, and only if
+		// none is already running: every failed restart ends in another exit,
+		// so spawning one per exit multiplies them until the host is carrying a
+		// crowd of goroutines all restarting the same core.
+		spawn := !asked && !s.supervising
+		if spawn {
+			s.supervising = true
+		}
 		s.mu.Unlock()
+		close(done)
 		// A core that dies on its own used to stay dead: the node kept reporting
 		// itself connected while every user on this core was cut off, and only a
 		// manual restart brought it back.
-		if !asked {
+		if spawn {
 			go s.superviseRestart()
 		}
 	}()
@@ -347,6 +369,15 @@ func (s *SingBox) teardown() {
 // Users are pushed again after each successful start, because the process comes
 // up with only whatever the config file carried, which is none of them.
 func (s *SingBox) superviseRestart() {
+	// Every path out of this loop has to release the flag, or a core that dies
+	// again later would find a supervisor still marked as running and never be
+	// brought back.
+	defer func() {
+		s.mu.Lock()
+		s.supervising = false
+		s.mu.Unlock()
+	}()
+
 	delay := restartBackoffMin
 	for {
 		s.mu.RLock()

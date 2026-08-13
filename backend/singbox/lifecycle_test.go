@@ -1,6 +1,9 @@
 package singbox
 
-import "testing"
+import (
+	"sync"
+	"testing"
+)
 
 // Stopping the core and cleaning up after a start that failed look the same
 // from the outside and mean opposite things to the supervisor. Conflating them
@@ -61,6 +64,69 @@ func TestShutdownIsSafeToCallTwice(t *testing.T) {
 	s := newLifecycleSB()
 	s.Shutdown()
 	s.Shutdown()
+}
+
+// The watcher goroutine used to close s.waitDone — the field, read at the
+// moment the process exited. A restart puts its own channel there first, so the
+// departing watcher closed the new one and the new watcher closed it again.
+//
+// close of a closed channel panics, and a panic in a goroutine takes the whole
+// node process down: xray, WireGuard and OpenVPN all died because a sing-box
+// core could not find its certificate. It crash-looped a live node every two
+// minutes until the core was taken off it.
+func TestARestartDoesNotLeaveTwoWatchersOnOneChannel(t *testing.T) {
+	s := newLifecycleSB()
+
+	// What start() does: hand the watcher the channel it created, not the field.
+	watch := func() (chan struct{}, func()) {
+		done := make(chan struct{})
+		s.mu.Lock()
+		s.waitDone = done
+		s.mu.Unlock()
+		return done, func() { close(done) }
+	}
+
+	_, exitFirst := watch()  // first process starts
+	_, exitSecond := watch() // restart, before the first has finished exiting
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	// Whichever order they exit in, each closes only its own channel.
+	go func() { defer wg.Done(); exitSecond() }()
+	go func() { defer wg.Done(); exitFirst() }()
+	wg.Wait()
+}
+
+func TestOnlyOneSupervisorRunsAtATime(t *testing.T) {
+	// Each failed restart ends in another exit, so one supervisor per exit
+	// multiplies them until the host carries a crowd of goroutines all
+	// restarting the same core.
+	s := newLifecycleSB()
+
+	claim := func() bool {
+		s.mu.Lock()
+		defer s.mu.Unlock()
+		if s.supervising {
+			return false
+		}
+		s.supervising = true
+		return true
+	}
+
+	if !claim() {
+		t.Fatal("the first exit could not start a supervisor")
+	}
+	if claim() {
+		t.Fatal("a second exit started another supervisor while one was already running")
+	}
+
+	// The supervisor releasing it must let a later death be supervised again.
+	s.mu.Lock()
+	s.supervising = false
+	s.mu.Unlock()
+	if !claim() {
+		t.Fatal("a core that died after the supervisor finished was left dead")
+	}
 }
 
 func TestUnreadUsageSurvivesTheCoreBeingTornDown(t *testing.T) {
