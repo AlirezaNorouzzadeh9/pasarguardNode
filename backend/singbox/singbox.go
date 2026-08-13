@@ -109,6 +109,12 @@ func New(cfg *config.Config, singboxConfig *Config, users []*common.User) (*Sing
 		users:    make(map[string]userCredentials, len(users)),
 		pushStop: make(chan struct{}),
 		client:   newClashClient(singboxConfig.clashAPIAddress, singboxConfig.clashAPISecret),
+		// Built once and kept for the life of the backend, not rebuilt on every
+		// start. It holds counters drained from sing-box that the panel has not
+		// collected yet, so replacing it on restart lost real usage; and being
+		// written only here means the readers in GetStats and teardown are not
+		// racing a start that is reassigning it.
+		stats: newStatsClient(singboxConfig.statsAddress),
 	}
 	for _, u := range users {
 		if email, creds, ok := s.credentials(u); ok {
@@ -187,7 +193,11 @@ func (s *SingBox) start() error {
 	}()
 
 	if err := s.waitReady(ctx); err != nil {
-		s.Shutdown()
+		// teardown, not Shutdown: this is cleaning up a start that failed, not
+		// an operator stopping the core. Shutdown says "stop and stay stopped",
+		// which the supervisor reads as its own cue to give up — so using it
+		// here made one failed restart the last one ever attempted.
+		s.teardown()
 		return err
 	}
 
@@ -196,7 +206,6 @@ func (s *SingBox) start() error {
 	s.version = s.readVersion()
 	s.mu.Unlock()
 
-	s.stats = newStatsClient(s.config.statsAddress)
 	return nil
 }
 
@@ -273,13 +282,34 @@ func (s *SingBox) Restart() error {
 	return s.pushUsers(context.Background())
 }
 
+// Shutdown stops the core and keeps it stopped.
+//
+// The difference from teardown is the intent it records: stopping tells the
+// supervisor not to bring the process back, and closing pushStop wakes it out
+// of a backoff sleep instead of leaving it to wait out the full delay.
 func (s *SingBox) Shutdown() {
+	s.mu.Lock()
+	s.stopping = true // tells the supervisor this exit was asked for
+	if s.pushStop != nil {
+		// Set to nil as well as closed, so a second Shutdown does not panic on
+		// a channel that is already closed. A nil channel blocks forever, which
+		// is the right reading for a supervisor that has nothing to wait for.
+		close(s.pushStop)
+		s.pushStop = nil
+	}
+	s.mu.Unlock()
+
+	s.teardown()
+}
+
+// teardown stops the process and lets go of what it owned, without saying
+// anything about whether it should come back.
+func (s *SingBox) teardown() {
 	s.mu.Lock()
 	cancel := s.cancel
 	done := s.waitDone
 	s.cancel = nil
 	s.started = false
-	s.stopping = true // tells the supervisor this exit was asked for
 	s.mu.Unlock()
 
 	s.usersMu.Lock()
@@ -298,6 +328,9 @@ func (s *SingBox) Shutdown() {
 		case <-time.After(10 * time.Second):
 		}
 	}
+	// Only the connection is dropped. The counters already read out of sing-box
+	// but not yet handed to the panel live on the client, and a restart that
+	// replaced it would throw away usage nobody has been billed for yet.
 	if s.stats != nil {
 		s.stats.close()
 	}
@@ -472,7 +505,7 @@ func (s *SingBox) pushSoon() {
 	})
 }
 
-// buildPayloadLocked lays the current user set out over stable positions.
+// reconcileSlotsLocked lays the current user set out over stable positions.
 //
 // A user keeps the slot they were first given for as long as they exist, and a
 // departed user's slot is held open rather than closed up, because closing it
