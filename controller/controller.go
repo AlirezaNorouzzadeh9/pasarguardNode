@@ -13,6 +13,7 @@ import (
 
 	"github.com/pasarguard/node/backend"
 	"github.com/pasarguard/node/backend/openvpn"
+	"github.com/pasarguard/node/backend/singbox"
 	"github.com/pasarguard/node/backend/wireguard"
 	"github.com/pasarguard/node/backend/xray"
 	"github.com/pasarguard/node/common"
@@ -205,6 +206,16 @@ func (c *Controller) StartBackend(ctx context.Context, backendCfg *common.Backen
 			return err
 		}
 
+	case common.BackendType_SINGBOX:
+		config, err := singbox.NewConfig(backendCfg.GetConfig())
+		if err != nil {
+			return err
+		}
+		newBackend, err = singbox.New(c.cfg, config, backendCfg.GetUsers())
+		if err != nil {
+			return err
+		}
+
 	default:
 		return errors.New("invalid backend type")
 	}
@@ -263,6 +274,11 @@ func backendInstanceID(t common.BackendType, configStr string) string {
 		// and subnet, so several can coexist. The inbound tag is what tells them
 		// apart — the same thing the panel names the core's inbound by.
 		field = "inbound_tag"
+	case common.BackendType_SINGBOX:
+		// A sing-box core is its own process with its own ports, so several can
+		// coexist. Its identifier is nested rather than top-level: the config is
+		// sing-box's own schema, and the tag lives on the inbound.
+		return singboxInstanceID(configStr)
 	default:
 		return ""
 	}
@@ -273,6 +289,29 @@ func backendInstanceID(t common.BackendType, configStr string) string {
 	}
 	if v, ok := parsed[field].(string); ok {
 		return strings.TrimSpace(v)
+	}
+	return ""
+}
+
+// singboxInstanceID names a sing-box core by the first inbound whose users it
+// manages. Parsed here rather than through singbox.NewConfig because this runs
+// on the retire path, where a config that no longer validates still has to map
+// to the core it started as — otherwise the old process is never shut down and
+// keeps the port.
+func singboxInstanceID(configStr string) string {
+	var parsed struct {
+		Inbounds []struct {
+			Type string `json:"type"`
+			Tag  string `json:"tag"`
+		} `json:"inbounds"`
+	}
+	if err := json.Unmarshal([]byte(configStr), &parsed); err != nil {
+		return ""
+	}
+	for _, inbound := range parsed.Inbounds {
+		if inbound.Type == "hysteria2" {
+			return strings.TrimSpace(inbound.Tag)
+		}
 	}
 	return ""
 }

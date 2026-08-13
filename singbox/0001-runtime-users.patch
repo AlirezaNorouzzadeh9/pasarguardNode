@@ -1,0 +1,329 @@
+From 3f38c1c89da266868c92d334d9ecc2470fcb6558 Mon Sep 17 00:00:00 2001
+From: pasarguard <dev@pasarguard.local>
+Date: Tue, 11 Aug 2026 05:17:07 +0000
+Subject: [PATCH 1/2] feat(clashapi): replace an inbound's users without
+ restarting
+
+A panel adds and removes users continuously. Restarting sing-box for each
+change drops every live connection, so in practice user churn and sing-box
+were incompatible.
+
+The capability was already here: every protocol service supports having its
+credential table replaced. Only the inbounds never exposed a way to ask for it
+after startup, so it could happen once, inside NewInbound, and never again.
+
+Three parts:
+
+  hysteria2 gains an exported UpdateUsers. The service's credentials and
+  userNameList are swapped under one write lock, because that list is indexed
+  by the user id the service returns - updating them separately bills traffic
+  arriving mid-swap to the wrong user. Name lookup is now bounds-checked: the
+  id can come from a connection authenticated against a longer list, and
+  indexing past the end panics the process.
+
+  clash_api gains PUT /inbounds/{tag}/users, behind the existing secret. It is
+  generic rather than per-protocol - the remaining six protocols are a case in
+  one switch, not another route. The body matches the inbound's own users
+  block, so whatever writes the config can drive this too.
+
+  v2ray_api stats accept "*" in the users list, meaning count everyone. Naming
+  users individually cannot work here: that list is read once at startup, so a
+  user created later passes traffic attributed to nobody - which defeats the
+  point of adding them without a restart. This matches how xray gates user
+  stats, with a switch rather than an allowlist.
+
+Verified against a live tunnel: a user created after startup passes traffic and
+is counted under their own name, with no restart in the log.
+
+Not covered: removing a user does not close their established sessions. New
+connections are refused; existing ones run until they close.
+---
+ experimental/clashapi/inbound_users.go | 100 +++++++++++++++++++++++++
+ experimental/clashapi/server.go        |   3 +
+ experimental/v2rayapi/stats.go         |  14 +++-
+ protocol/hysteria2/inbound.go          |  46 +++++++++++-
+ 4 files changed, 159 insertions(+), 4 deletions(-)
+ create mode 100644 experimental/clashapi/inbound_users.go
+
+diff --git a/experimental/clashapi/inbound_users.go b/experimental/clashapi/inbound_users.go
+new file mode 100644
+index 0000000..6242eb4
+--- /dev/null
++++ b/experimental/clashapi/inbound_users.go
+@@ -0,0 +1,100 @@
++package clashapi
++
++import (
++	"encoding/json"
++	"net/http"
++
++	"github.com/sagernet/sing-box/adapter"
++	"github.com/sagernet/sing-box/option"
++
++	"github.com/go-chi/chi/v5"
++	"github.com/go-chi/render"
++)
++
++// Replacing an inbound's users without restarting.
++//
++// A panel adds and removes users continuously; restarting the process for each
++// change would drop every live connection. The protocol services underneath
++// already support having their credential table replaced at runtime - what was
++// missing is a way to ask for it from outside, which is what this provides.
++//
++// The route is generic rather than per-protocol: each inbound decodes the user
++// list into its own option type, so adding another protocol means implementing
++// one interface, not adding another endpoint.
++
++// userUpdater is implemented by inbounds that can swap their user set while
++// running. The concrete user type differs per protocol, so each implementation
++// decodes the raw list itself.
++type hysteria2UserUpdater interface {
++	UpdateUsers(users []option.Hysteria2User) error
++}
++
++type updateUsersRequest struct {
++	Users json.RawMessage `json:"users"`
++}
++
++func inboundUserRouter(server *Server) http.Handler {
++	r := chi.NewRouter()
++	r.Put("/{tag}/users", updateInboundUsers(server))
++	return r
++}
++
++// PUT /inbounds/{tag}/users
++//
++//	{"users": [{"name": "...", "password": "..."}]}
++//
++// The users array is the same shape the inbound takes in the config file, so
++// whatever generates the config can generate this without a second mapping.
++func updateInboundUsers(server *Server) http.HandlerFunc {
++	return func(w http.ResponseWriter, r *http.Request) {
++		tag := chi.URLParam(r, "tag")
++		if tag == "" {
++			render.Status(r, http.StatusBadRequest)
++			render.JSON(w, r, newError("missing inbound tag"))
++			return
++		}
++		var request updateUsersRequest
++		if err := render.DecodeJSON(r.Body, &request); err != nil {
++			render.Status(r, http.StatusBadRequest)
++			render.JSON(w, r, ErrBadRequest)
++			return
++		}
++		if server.inbound == nil {
++			render.Status(r, http.StatusInternalServerError)
++			render.JSON(w, r, newError("inbound manager unavailable"))
++			return
++		}
++		inbound, found := server.inbound.Get(tag)
++		if !found {
++			render.Status(r, http.StatusNotFound)
++			render.JSON(w, r, newError("inbound not found: "+tag))
++			return
++		}
++		count, err := updateUsers(inbound, request.Users)
++		if err != nil {
++			render.Status(r, http.StatusBadRequest)
++			render.JSON(w, r, newError(err.Error()))
++			return
++		}
++		render.Status(r, http.StatusOK)
++		render.JSON(w, r, render.M{"tag": tag, "count": count})
++	}
++}
++
++// updateUsers decodes the raw list into the type the inbound expects and
++// applies it. Protocols are added here, one case each.
++func updateUsers(inbound adapter.Inbound, raw json.RawMessage) (int, error) {
++	switch updater := inbound.(type) {
++	case hysteria2UserUpdater:
++		var users []option.Hysteria2User
++		if err := json.Unmarshal(raw, &users); err != nil {
++			return 0, err
++		}
++		if err := updater.UpdateUsers(users); err != nil {
++			return 0, err
++		}
++		return len(users), nil
++	default:
++		return 0, newError("inbound does not support updating users: " + inbound.Type())
++	}
++}
+diff --git a/experimental/clashapi/server.go b/experimental/clashapi/server.go
+index 950dca0..5f26d07 100644
+--- a/experimental/clashapi/server.go
++++ b/experimental/clashapi/server.go
+@@ -46,6 +46,7 @@ type Server struct {
+ 	dnsRouter      adapter.DNSRouter
+ 	outbound       adapter.OutboundManager
+ 	endpoint       adapter.EndpointManager
++	inbound        adapter.InboundManager
+ 	logger         log.Logger
+ 	httpServer     *http.Server
+ 	trafficManager *trafficontrol.Manager
+@@ -71,6 +72,7 @@ func NewServer(ctx context.Context, logFactory log.ObservableFactory, options op
+ 		dnsRouter: service.FromContext[adapter.DNSRouter](ctx),
+ 		outbound:  service.FromContext[adapter.OutboundManager](ctx),
+ 		endpoint:  service.FromContext[adapter.EndpointManager](ctx),
++		inbound:   service.FromContext[adapter.InboundManager](ctx),
+ 		logger:    logFactory.NewLogger("clash-api"),
+ 		httpServer: &http.Server{
+ 			Addr:    options.ExternalController,
+@@ -128,6 +130,7 @@ func NewServer(ctx context.Context, logFactory log.ObservableFactory, options op
+ 		r.Mount("/profile", profileRouter())
+ 		r.Mount("/cache", cacheRouter(ctx))
+ 		r.Mount("/dns", dnsRouter(s.dnsRouter))
++		r.Mount("/inbounds", inboundUserRouter(s))
+ 
+ 		s.setupMetaAPI(r)
+ 	})
+diff --git a/experimental/v2rayapi/stats.go b/experimental/v2rayapi/stats.go
+index c7b2b49..fd7eb63 100644
+--- a/experimental/v2rayapi/stats.go
++++ b/experimental/v2rayapi/stats.go
+@@ -31,6 +31,7 @@ type StatsService struct {
+ 	inbounds  map[string]bool
+ 	outbounds map[string]bool
+ 	users     map[string]bool
++	allUsers  bool
+ 	access    sync.Mutex
+ 	counters  map[string]*atomic.Int64
+ }
+@@ -42,6 +43,7 @@ func NewStatsService(options option.V2RayStatsServiceOptions) *StatsService {
+ 	inbounds := make(map[string]bool)
+ 	outbounds := make(map[string]bool)
+ 	users := make(map[string]bool)
++	var allUsers bool
+ 	for _, inbound := range options.Inbounds {
+ 		inbounds[inbound] = true
+ 	}
+@@ -49,6 +51,13 @@ func NewStatsService(options option.V2RayStatsServiceOptions) *StatsService {
+ 		outbounds[outbound] = true
+ 	}
+ 	for _, user := range options.Users {
++		// "*" counts every user, including ones added after start. Naming them
++		// individually cannot: this list is read once, here, so a user created
++		// later would pass traffic that is attributed to no one.
++		if user == "*" {
++			allUsers = true
++			continue
++		}
+ 		users[user] = true
+ 	}
+ 	return &StatsService{
+@@ -56,6 +65,7 @@ func NewStatsService(options option.V2RayStatsServiceOptions) *StatsService {
+ 		inbounds:  inbounds,
+ 		outbounds: outbounds,
+ 		users:     users,
++		allUsers:  allUsers,
+ 		counters:  make(map[string]*atomic.Int64),
+ 	}
+ }
+@@ -68,7 +78,7 @@ func (s *StatsService) RoutedConnection(ctx context.Context, conn net.Conn, meta
+ 	var writeCounter []*atomic.Int64
+ 	countInbound := inbound != "" && s.inbounds[inbound]
+ 	countOutbound := outbound != "" && s.outbounds[outbound]
+-	countUser := user != "" && s.users[user]
++	countUser := user != "" && (s.allUsers || s.users[user])
+ 	if !countInbound && !countOutbound && !countUser {
+ 		return conn
+ 	}
+@@ -97,7 +107,7 @@ func (s *StatsService) RoutedPacketConnection(ctx context.Context, conn N.Packet
+ 	var writeCounter []*atomic.Int64
+ 	countInbound := inbound != "" && s.inbounds[inbound]
+ 	countOutbound := outbound != "" && s.outbounds[outbound]
+-	countUser := user != "" && s.users[user]
++	countUser := user != "" && (s.allUsers || s.users[user])
+ 	if !countInbound && !countOutbound && !countUser {
+ 		return conn
+ 	}
+diff --git a/protocol/hysteria2/inbound.go b/protocol/hysteria2/inbound.go
+index bb59807..416186b 100644
+--- a/protocol/hysteria2/inbound.go
++++ b/protocol/hysteria2/inbound.go
+@@ -6,6 +6,7 @@ import (
+ 	"net/http"
+ 	"net/http/httputil"
+ 	"net/url"
++	"sync"
+ 	"time"
+ 
+ 	"github.com/sagernet/sing-box/adapter"
+@@ -35,6 +36,7 @@ type Inbound struct {
+ 	listener     *listener.Listener
+ 	tlsConfig    tls.ServerConfig
+ 	service      *hysteria2.Service[int]
++	userAccess   sync.RWMutex
+ 	userNameList []string
+ }
+ 
+@@ -143,6 +145,46 @@ func NewInbound(ctx context.Context, router adapter.Router, logger log.ContextLo
+ 	return inbound, nil
+ }
+ 
++// UpdateUsers replaces the inbound's user set while it is running.
++//
++// The service's credential table and userNameList are swapped under one write
++// lock because the name list is indexed by the user id the service hands back.
++// A reader that saw the new credentials against the old names would bill
++// traffic to the wrong user, or index past the end of a shorter list.
++//
++// Connections already established keep running: their user name was resolved
++// when the connection was accepted. Removing a user stops new connections, not
++// existing ones.
++func (h *Inbound) UpdateUsers(users []option.Hysteria2User) error {
++	userList := make([]int, 0, len(users))
++	userNameList := make([]string, 0, len(users))
++	userPasswordList := make([]string, 0, len(users))
++	for index, user := range users {
++		userList = append(userList, index)
++		userNameList = append(userNameList, user.Name)
++		userPasswordList = append(userPasswordList, user.Password)
++	}
++	h.userAccess.Lock()
++	defer h.userAccess.Unlock()
++	h.service.UpdateUsers(userList, userPasswordList)
++	h.userNameList = userNameList
++	return nil
++}
++
++// userName resolves the name the service's user id refers to.
++//
++// Bounds-checked rather than indexed directly: the id comes from a connection
++// that may have authenticated against a longer user list than the one now in
++// place, and an out-of-range index here would panic the whole process.
++func (h *Inbound) userName(userID int) string {
++	h.userAccess.RLock()
++	defer h.userAccess.RUnlock()
++	if userID < 0 || userID >= len(h.userNameList) {
++		return ""
++	}
++	return h.userNameList[userID]
++}
++
+ func (h *Inbound) NewConnectionEx(ctx context.Context, conn net.Conn, source M.Socksaddr, destination M.Socksaddr, onClose N.CloseHandlerFunc) {
+ 	ctx = log.ContextWithNewID(ctx)
+ 	var metadata adapter.InboundContext
+@@ -156,7 +198,7 @@ func (h *Inbound) NewConnectionEx(ctx context.Context, conn net.Conn, source M.S
+ 	metadata.Destination = destination
+ 	h.logger.InfoContext(ctx, "inbound connection from ", metadata.Source)
+ 	userID, _ := auth.UserFromContext[int](ctx)
+-	if userName := h.userNameList[userID]; userName != "" {
++	if userName := h.userName(userID); userName != "" {
+ 		metadata.User = userName
+ 		h.logger.InfoContext(ctx, "[", userName, "] inbound connection to ", metadata.Destination)
+ 	} else {
+@@ -178,7 +220,7 @@ func (h *Inbound) NewPacketConnectionEx(ctx context.Context, conn N.PacketConn,
+ 	metadata.Destination = destination
+ 	h.logger.InfoContext(ctx, "inbound packet connection from ", metadata.Source)
+ 	userID, _ := auth.UserFromContext[int](ctx)
+-	if userName := h.userNameList[userID]; userName != "" {
++	if userName := h.userName(userID); userName != "" {
+ 		metadata.User = userName
+ 		h.logger.InfoContext(ctx, "[", userName, "] inbound packet connection to ", metadata.Destination)
+ 	} else {
+-- 
+2.34.1
+

@@ -17,6 +17,7 @@ enum BackendType {
   XRAY = 0;
   WIREGUARD = 1;
   OPENVPN = 2;
+  SINGBOX = 3;
 }
 
 message Backend {
