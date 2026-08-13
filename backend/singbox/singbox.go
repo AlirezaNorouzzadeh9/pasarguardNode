@@ -381,20 +381,55 @@ func (s *SingBox) SyncUser(_ context.Context, user *common.User) error {
 	return nil
 }
 
+// SyncUsers is the whole user set. Anyone absent from it is gone.
 func (s *SingBox) SyncUsers(ctx context.Context, users []*common.User) error {
 	return s.replaceUsers(ctx, users)
 }
 
+// UpdateUsers is a change to some users, not the whole set — the same contract
+// the xray backend keeps, where SyncUsers rebuilds the client map and
+// UpdateUsers only adds and removes the accounts it was handed.
+//
+// This used to replace everything, which meant any partial update emptied the
+// core of every user it did not mention. The panel sends one of these when a
+// group's inbounds change, in batches, so each batch discarded the one before
+// it and the core was left holding only the last few hundred users: every other
+// user on the node stopped authenticating, on every protocol at once, with
+// nothing logged anywhere.
 func (s *SingBox) UpdateUsers(ctx context.Context, users []*common.User) error {
-	return s.replaceUsers(ctx, users)
+	return s.mergeUsers(ctx, users)
 }
 
-// UpdateUsersAndRestart replaces the user set without restarting. The whole
+// UpdateUsersAndRestart applies the same change without restarting. The whole
 // point of the runtime-users patch is that a user change no longer costs every
 // live connection, so honouring the "and restart" literally would give back
 // exactly what it bought.
 func (s *SingBox) UpdateUsersAndRestart(ctx context.Context, users []*common.User) error {
-	return s.replaceUsers(ctx, users)
+	return s.mergeUsers(ctx, users)
+}
+
+// mergeUsers applies a partial update: each user named is added, updated, or
+// removed, and everyone not named is left exactly as they were.
+func (s *SingBox) mergeUsers(ctx context.Context, users []*common.User) error {
+	s.usersMu.Lock()
+	for _, u := range users {
+		if u == nil {
+			continue
+		}
+		if email, creds, ok := s.credentials(u); ok {
+			s.users[email] = creds
+			continue
+		}
+		// Named but no longer usable here: removed, or no longer entitled to an
+		// inbound this core serves.
+		delete(s.users, strings.TrimSpace(u.GetEmail()))
+	}
+	if s.pushTimer != nil {
+		s.pushTimer.Stop()
+		s.pushTimer = nil
+	}
+	s.usersMu.Unlock()
+	return s.pushUsers(ctx)
 }
 
 func (s *SingBox) replaceUsers(ctx context.Context, users []*common.User) error {

@@ -244,7 +244,14 @@ func sbWithTags(tags ...string) *SingBox {
 	for i, tag := range tags {
 		inbounds[i] = managedInbound{tag: tag, kind: credHysteria2}
 	}
-	return &SingBox{config: &Config{inbounds: inbounds}, users: map[string]userCredentials{}}
+	return &SingBox{
+		config: &Config{inbounds: inbounds},
+		users:  map[string]userCredentials{},
+		// The paths under test push as their last step. Nothing is listening
+		// here, so the push fails and is ignored — what these assert is the user
+		// map it was built from, not the delivery.
+		client: newClashClient("127.0.0.1:1", ""),
+	}
 }
 
 func user(email, auth string, inbounds ...string) *common.User {
@@ -282,6 +289,59 @@ func TestUserWithNoSecretAtAllIsNotServed(t *testing.T) {
 	entitled := &common.User{Email: "974", Inbounds: []string{"singbox-hy2"}, Proxies: &common.Proxy{}}
 	if _, _, ok := s.credentials(entitled); ok {
 		t.Fatal("a user with no credential of any kind is being served")
+	}
+}
+
+// SyncUsers is the whole set; UpdateUsers is a change to part of it. Treating
+// the second like the first emptied the core of everyone a batch did not
+// mention — which, on a node with thousands of users, meant almost everyone
+// stopped authenticating at once, on every protocol, with nothing logged.
+
+func TestAPartialUpdateKeepsTheUsersItDoesNotMention(t *testing.T) {
+	s := sbWithTags("singbox-hy2")
+	s.pushStop = make(chan struct{})
+	s.users["101"] = hy("a")
+	s.users["102"] = hy("b")
+
+	_ = s.UpdateUsers(context.Background(), []*common.User{user("103", "c", "singbox-hy2")})
+
+	for _, email := range []string{"101", "102", "103"} {
+		if _, present := s.users[email]; !present {
+			t.Fatalf("%s is missing after an update that did not mention them", email)
+		}
+	}
+}
+
+func TestAPartialUpdateStillRemovesAUserItDoesMention(t *testing.T) {
+	s := sbWithTags("singbox-hy2")
+	s.pushStop = make(chan struct{})
+	s.users["101"] = hy("a")
+	s.users["102"] = hy("b")
+
+	// Entitlement withdrawn: same credential, no inbounds.
+	_ = s.UpdateUsers(context.Background(), []*common.User{user("101", "a")})
+
+	if _, present := s.users["101"]; present {
+		t.Fatal("a user whose entitlement was withdrawn is still being served")
+	}
+	if _, present := s.users["102"]; !present {
+		t.Fatal("an unrelated user was dropped by the update")
+	}
+}
+
+func TestSyncStillReplacesTheWholeSet(t *testing.T) {
+	s := sbWithTags("singbox-hy2")
+	s.pushStop = make(chan struct{})
+	s.users["101"] = hy("a")
+	s.users["102"] = hy("b")
+
+	_ = s.SyncUsers(context.Background(), []*common.User{user("103", "c", "singbox-hy2")})
+
+	if _, present := s.users["101"]; present {
+		t.Fatal("sync should have replaced the set, but an old user survived")
+	}
+	if _, present := s.users["103"]; !present {
+		t.Fatal("sync did not add the user it was given")
 	}
 }
 
