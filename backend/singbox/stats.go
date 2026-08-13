@@ -23,10 +23,64 @@ type statsClient struct {
 	mu     sync.Mutex
 	conn   *grpc.ClientConn
 	client statsapi.StatsServiceClient
+
+	// Counters read out of sing-box but not yet handed to whoever asked for
+	// them. See collect: sing-box resets everything or nothing, so this is
+	// where the counters nobody asked for wait for the caller who wants them.
+	pendingMu sync.Mutex
+	pending   map[string]int64
 }
 
 func newStatsClient(target string) *statsClient {
-	return &statsClient{target: target}
+	return &statsClient{target: target, pending: make(map[string]int64)}
+}
+
+// collect drains sing-box's counters into pending.
+//
+// sing-box ignores the query pattern and answers with every counter it holds,
+// and its reset is all-or-nothing to match. So a poll for one kind of counter
+// zeroes every other kind at the same time — and the counters the caller did
+// not ask for are not merely skipped, they are destroyed.
+//
+// The panel polls user usage every 10s and outbound usage every 30s, both
+// resetting. Each poll therefore threw away whatever the other had not read
+// yet, and a user's traffic vanished whenever the outbound poll landed first:
+// a full megabyte at a time, attributed to nobody, with every part of the
+// system reporting success.
+//
+// So the reset happens exactly once, here, and everything it returns is kept.
+// A caller then takes only its own counters, and the rest stay for theirs.
+func (s *statsClient) collect(ctx context.Context) error {
+	stats, err := s.query(ctx, "", true)
+	if err != nil {
+		return err
+	}
+	s.pendingMu.Lock()
+	defer s.pendingMu.Unlock()
+	for _, stat := range stats {
+		s.pending[stat.GetName()] += stat.GetValue()
+	}
+	return nil
+}
+
+// take returns the pending counters matching prefix, removing them if the
+// caller is consuming them. A caller that is only looking leaves them for the
+// one that bills from them.
+func (s *statsClient) take(prefix string, consume bool) map[string]int64 {
+	s.pendingMu.Lock()
+	defer s.pendingMu.Unlock()
+
+	out := make(map[string]int64)
+	for name, value := range s.pending {
+		if prefix != "" && !strings.HasPrefix(name, prefix) {
+			continue
+		}
+		out[name] = value
+		if consume {
+			delete(s.pending, name)
+		}
+	}
+	return out
 }
 
 // dial connects lazily. The stats endpoint is only used when the panel polls,
@@ -98,28 +152,22 @@ func (s *SingBox) GetStats(ctx context.Context, request *common.StatRequest) (*c
 		pattern = ""
 	}
 
-	stats, err := s.stats.query(ctx, pattern, request.GetReset_())
-	if err != nil {
+	// Everything sing-box has is drained into pending first, then this caller
+	// takes only its own share. Filtering sing-box's answer directly would drop
+	// counters it has already zeroed — which is data loss, not a filter.
+	if err := s.stats.collect(ctx); err != nil {
 		return nil, err
 	}
+	stats := s.stats.take(pattern, request.GetReset_())
 
 	response := &common.StatResponse{Stats: make([]*common.Stat, 0, len(stats))}
-	for _, stat := range stats {
-		// sing-box does not honour the pattern - it answers with every counter
-		// it holds regardless - so the filter has to be applied here. Without
-		// it a users request also carries the inbound's own counters, and the
-		// panel reads an inbound tag where it expects a user id: it logs
-		// "Skipping invalid UID: <tag>" and drops that poll's usage entirely,
-		// so traffic is recorded for nobody while everything looks healthy.
-		if pattern != "" && !strings.HasPrefix(stat.GetName(), pattern) {
-			continue
-		}
-		name, kind, link := splitStatName(stat.GetName())
+	for rawName, value := range stats {
+		name, kind, link := splitStatName(rawName)
 		response.Stats = append(response.Stats, &common.Stat{
 			Name:  name,
 			Type:  kind,
 			Link:  link,
-			Value: stat.GetValue(),
+			Value: value,
 		})
 	}
 	return response, nil
