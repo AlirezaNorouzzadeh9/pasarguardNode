@@ -214,7 +214,7 @@ func (s *SingBox) start() error {
 		}
 	}()
 
-	if err := s.waitReady(ctx); err != nil {
+	if err := s.waitReady(ctx, done); err != nil {
 		// teardown, not Shutdown: this is cleaning up a start that failed, not
 		// an operator stopping the core. Shutdown says "stop and stay stopped",
 		// which the supervisor reads as its own cue to give up — so using it
@@ -234,13 +234,17 @@ func (s *SingBox) start() error {
 // waitReady polls clash_api until it answers. Reporting the backend started
 // before that would let the panel mark the node connected while the process is
 // still deciding whether its config parses.
-func (s *SingBox) waitReady(ctx context.Context) error {
+//
+// It watches the channel belonging to the process it started, passed in rather
+// than read off the struct: a restart overlapping this one would have put its
+// own there, and waiting on that means waiting for the wrong process to exit.
+func (s *SingBox) waitReady(ctx context.Context, done <-chan struct{}) error {
 	deadline := time.Now().Add(readyTimeout)
 	for time.Now().Before(deadline) {
 		select {
 		case <-ctx.Done():
 			return errors.New("singbox: process exited before it became ready")
-		case <-s.waitDone:
+		case <-done:
 			return errors.New("singbox: process exited before it became ready; check the core log")
 		case <-time.After(200 * time.Millisecond):
 		}
@@ -396,8 +400,17 @@ func (s *SingBox) superviseRestart() {
 
 		s.mu.RLock()
 		stopping = s.stopping
+		running := s.started
 		s.mu.RUnlock()
 		if stopping {
+			return
+		}
+		// Restart() stops the core and starts it again itself. A supervisor left
+		// over from the stop half would otherwise wake to a core that is already
+		// up and start a second process on the same ports, which the first one
+		// holds — so it would fail, back off, and keep trying against a core that
+		// was never broken.
+		if running {
 			return
 		}
 

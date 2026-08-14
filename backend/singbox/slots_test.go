@@ -83,8 +83,16 @@ func TestRemovedUserDoesNotShiftTheOthers(t *testing.T) {
 func TestFreedSlotIsHeldButNotUsable(t *testing.T) {
 	users := map[string]userCredentials{"101": hy("secret-a"), "102": hy("secret-b")}
 	s := newSB(users)
+	// Laid out explicitly rather than left to map order. A trailing hole is
+	// trimmed — deliberately — so if 101 happened to land last there would be no
+	// slot left to inspect, and the test failed about one run in three on that
+	// alone rather than on anything being wrong.
+	s.slots = []string{"101", "102"}
 	first := s.payload()
 	gone := indexOf(first, "101")
+	if gone != 0 {
+		t.Fatalf("expected 101 at slot 0, got %d", gone)
+	}
 
 	delete(users, "101")
 	after := s.payload()

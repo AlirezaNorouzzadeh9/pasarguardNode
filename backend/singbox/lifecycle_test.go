@@ -97,6 +97,34 @@ func TestARestartDoesNotLeaveTwoWatchersOnOneChannel(t *testing.T) {
 	wg.Wait()
 }
 
+func TestASupervisorLeavesARunningCoreAlone(t *testing.T) {
+	// Restart() stops the core and starts it again itself. A supervisor left
+	// over from the stop half wakes to a core that is already up; starting a
+	// second process would fight the first for its ports and fail forever
+	// against a core that was never broken.
+	s := newLifecycleSB()
+
+	s.mu.Lock()
+	s.started = true
+	s.mu.Unlock()
+
+	shouldRestart := func() bool {
+		s.mu.RLock()
+		defer s.mu.RUnlock()
+		return !s.stopping && !s.started
+	}
+	if shouldRestart() {
+		t.Fatal("a supervisor would have restarted a core that is already running")
+	}
+
+	s.mu.Lock()
+	s.started = false
+	s.mu.Unlock()
+	if !shouldRestart() {
+		t.Fatal("a core that really is down would not be restarted")
+	}
+}
+
 func TestOnlyOneSupervisorRunsAtATime(t *testing.T) {
 	// Each failed restart ends in another exit, so one supervisor per exit
 	// multiplies them until the host carries a crowd of goroutines all
