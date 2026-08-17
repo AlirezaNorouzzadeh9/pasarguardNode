@@ -30,6 +30,8 @@ func DetectVersion() string {
 func (o *L2TP) confFileName() string    { return "pg-l2tp-" + o.config.InboundTag + ".conf" }
 func (o *L2TP) xl2tpdConfPath() string  { return filepath.Join(o.config.workDir, "xl2tpd.conf") }
 func (o *L2TP) pppOptionsPath() string  { return filepath.Join(o.config.workDir, "ppp-options") }
+func (o *L2TP) ipUpScriptPath() string   { return filepath.Join(o.config.workDir, "ip-up") }
+func (o *L2TP) ipDownScriptPath() string { return filepath.Join(o.config.workDir, "ip-down") }
 func (o *L2TP) controlSocketPath() string { return filepath.Join(o.config.workDir, "l2tp-control") }
 func (o *L2TP) pidPath() string         { return filepath.Join(o.config.workDir, "xl2tpd.pid") }
 
@@ -50,7 +52,7 @@ func (o *L2TP) writeConfig() error {
 	if err := o.writePPPOptions(); err != nil {
 		return err
 	}
-	if err := writeIPScripts(); err != nil {
+	if err := o.writeIPScripts(); err != nil {
 		return err
 	}
 	return o.writeChapSecrets()
@@ -60,7 +62,7 @@ func (o *L2TP) writeConfig() error {
 // live PPP session (interface -> username + tunnel IP + pid). pppd runs every
 // executable in these directories when a session comes up or goes down, so the
 // Go poll loop can attribute per-interface traffic to a user and enforce limits.
-func writeIPScripts() error {
+func (o *L2TP) writeIPScripts() error {
 	up := "#!/bin/sh\n" +
 		"# PasarGuard L2TP session accounting hook (managed; do not edit).\n" +
 		"IF=\"${IFNAME:-$PPP_IFACE}\"\n" +
@@ -82,9 +84,14 @@ func writeIPScripts() error {
 		"[ -n \"$IF\" ] && rm -f " + sessionStateDir + "/\"$IF\"\n" +
 		"exit 0\n"
 
+	// Written next to the core's other generated files and named directly in
+	// ppp-options. The old location, /etc/ppp/ip-up.d/, only runs on
+	// distributions whose /etc/ppp/ip-up iterates that directory — Debian does,
+	// Alpine (this image) does not, so the hook never fired and no session was
+	// ever recorded.
 	scripts := map[string]string{
-		"/etc/ppp/ip-up.d/pg-l2tp":   up,
-		"/etc/ppp/ip-down.d/pg-l2tp": down,
+		o.ipUpScriptPath():   up,
+		o.ipDownScriptPath(): down,
 	}
 	for path, content := range scripts {
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -189,6 +196,11 @@ func (o *L2TP) writePPPOptions() error {
 	fmt.Fprintf(&b, "novj\n")
 	fmt.Fprintf(&b, "novjccomp\n")
 	fmt.Fprintf(&b, "connect-delay 5000\n")
+	// Named explicitly rather than left to a distribution's ip-up.d dispatcher,
+	// which Alpine does not provide. Without these the session file is never
+	// written and the core reports no users online and no traffic.
+	fmt.Fprintf(&b, "ip-up-script %s\n", o.ipUpScriptPath())
+	fmt.Fprintf(&b, "ip-down-script %s\n", o.ipDownScriptPath())
 	return os.WriteFile(o.pppOptionsPath(), []byte(b.String()), 0o600)
 }
 
