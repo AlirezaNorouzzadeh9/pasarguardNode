@@ -83,3 +83,20 @@ func TestAnEmptyPrefixTakesEverything(t *testing.T) {
 		t.Fatalf("pending should be empty, still holds %v", c.pending)
 	}
 }
+
+// The panel decides up vs down by Stat.Type == "uplink"/"downlink" (that is
+// where xray's parser puts the direction). An earlier splitStatName put the
+// counter category there instead, which made every sing-box outbound byte
+// count as downlink and dropped per-inbound counters entirely.
+func TestSplitStatNameMatchesXrayFieldOrder(t *testing.T) {
+	name, kind, link := splitStatName("inbound>>>singbox-ss>>>traffic>>>uplink")
+	if name != "singbox-ss" || kind != "uplink" || link != "traffic" {
+		t.Fatalf("got (%q, %q, %q), want (singbox-ss, uplink, traffic)", name, kind, link)
+	}
+
+	// A counter that is not four >>>-parts passes through under its own name.
+	name, kind, link = splitStatName("weird_counter")
+	if name != "weird_counter" || kind != "" || link != "" {
+		t.Fatalf("unexpected passthrough: (%q, %q, %q)", name, kind, link)
+	}
+}
