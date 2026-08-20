@@ -228,6 +228,14 @@ func (s *SingBox) start() error {
 	s.version = s.readVersion()
 	s.mu.Unlock()
 
+	// A process that just came up has no sessions, so no index is anyone's
+	// identity yet: this is the one moment the slot table — including the holes
+	// reconcileSlotsLocked keeps for possibly-live sessions — can be compacted
+	// without misbilling anybody. The next pushUsers lays users out afresh.
+	s.usersMu.Lock()
+	s.slots = nil
+	s.usersMu.Unlock()
+
 	return nil
 }
 
@@ -559,8 +567,17 @@ func (s *SingBox) pushSoon() {
 // A freed slot cannot simply be omitted: the list is positional, so the hole
 // has to be filled. It gets an entry whose password is unusable, which keeps
 // the arithmetic intact without leaving a credential anyone can authenticate
-// with. Trailing holes are trimmed, so a node that loses users does not carry
-// dead weight forever.
+// with.
+//
+// A freed slot is also never HANDED OUT again while this process lives — not
+// to a new user, and not by trimming the tail so a later append lands on it.
+// The departed user's session may still be connected (removal blocks new
+// handshakes, it does not close established sessions), and that session is
+// still identified by this index: give the index to somebody else and every
+// byte the old session keeps moving is billed to the new occupant. Holes
+// therefore persist until the process restarts; start() compacts the table at
+// the one moment no session exists to hold an index. The cost is bounded: the
+// list grows by one placeholder per remove-then-add cycle between restarts.
 //
 // Caller holds usersMu.
 func (s *SingBox) reconcileSlotsLocked() {
@@ -576,27 +593,14 @@ func (s *SingBox) reconcileSlotsLocked() {
 		s.slots[index] = "" // gone; hold the position open
 	}
 
-	// New users take the lowest free slot before extending the list, so the
-	// list stays as short as the user count allows.
-	free := 0
+	// New users always extend the list. Never the lowest free slot: that hole
+	// may still be somebody's live session.
 	for email := range s.users {
 		if _, done := placed[email]; done {
 			continue
 		}
-		for free < len(s.slots) && s.slots[free] != "" {
-			free++
-		}
-		if free < len(s.slots) {
-			s.slots[free] = email
-		} else {
-			s.slots = append(s.slots, email)
-		}
-		placed[email] = free
-		free++
-	}
-
-	for len(s.slots) > 0 && s.slots[len(s.slots)-1] == "" {
-		s.slots = s.slots[:len(s.slots)-1]
+		s.slots = append(s.slots, email)
+		placed[email] = len(s.slots) - 1
 	}
 }
 

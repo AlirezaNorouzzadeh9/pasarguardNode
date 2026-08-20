@@ -83,10 +83,8 @@ func TestRemovedUserDoesNotShiftTheOthers(t *testing.T) {
 func TestFreedSlotIsHeldButNotUsable(t *testing.T) {
 	users := map[string]userCredentials{"101": hy("secret-a"), "102": hy("secret-b")}
 	s := newSB(users)
-	// Laid out explicitly rather than left to map order. A trailing hole is
-	// trimmed — deliberately — so if 101 happened to land last there would be no
-	// slot left to inspect, and the test failed about one run in three on that
-	// alone rather than on anything being wrong.
+	// Laid out explicitly rather than left to map order, so the slot under
+	// inspection is always index 0 regardless of Go's map iteration.
 	s.slots = []string{"101", "102"}
 	first := s.payload()
 	gone := indexOf(first, "101")
@@ -108,7 +106,11 @@ func TestFreedSlotIsHeldButNotUsable(t *testing.T) {
 	}
 }
 
-func TestNewUserTakesAFreedSlotAndNotSomebodyElses(t *testing.T) {
+func TestFreedSlotIsNeverReusedWhileTheProcessLives(t *testing.T) {
+	// The departed user's session may still be connected — removal only blocks
+	// new handshakes — and that session is billed to whoever occupies its
+	// index. Giving the freed slot to a new user charged them for the old
+	// occupant's ongoing traffic, so a new user must always extend the list.
 	users := map[string]userCredentials{"101": hy("a"), "102": hy("b"), "103": hy("c")}
 	s := newSB(users)
 	first := s.payload()
@@ -119,15 +121,25 @@ func TestNewUserTakesAFreedSlotAndNotSomebodyElses(t *testing.T) {
 	users["999"] = hy("z")
 	after := s.payload()
 
-	if got := indexOf(after, "999"); got != freed {
-		t.Fatalf("new user took slot %d, expected the freed %d", got, freed)
+	if got := indexOf(after, "999"); got == freed {
+		t.Fatalf("new user was given freed slot %d — the old occupant's live session would bill to them", freed)
+	}
+	if got := indexOf(after, "999"); got != len(after)-1 {
+		t.Fatalf("new user should extend the list (index %d), got %d", len(after)-1, got)
+	}
+	if after[freed].Name != freeSlotName {
+		t.Fatalf("freed slot should stay an unusable placeholder, got %q", after[freed].Name)
 	}
 	if got := indexOf(after, "103"); got != keptIndex {
 		t.Fatalf("existing user 103 moved from %d to %d", keptIndex, got)
 	}
 }
 
-func TestTrailingHolesAreTrimmed(t *testing.T) {
+func TestHolesPersistUntilRestartCompactsThem(t *testing.T) {
+	// Mid-run, even trailing holes must stay: trimming them lets the next
+	// append land on an index a departed user's live session may still claim.
+	// Only a process (re)start — when no session exists — clears the table,
+	// which is what start() does by resetting slots.
 	users := map[string]userCredentials{"101": hy("a"), "102": hy("b"), "103": hy("c")}
 	s := newSB(users)
 	s.payload()
@@ -135,8 +147,21 @@ func TestTrailingHolesAreTrimmed(t *testing.T) {
 	delete(users, "101")
 	delete(users, "102")
 	delete(users, "103")
-	if got := len(s.payload()); got != 0 {
-		t.Fatalf("payload should be empty once every user is gone, got %d entries", got)
+	if got := len(s.payload()); got != 3 {
+		t.Fatalf("holes must persist mid-run, want 3 placeholders, got %d entries", got)
+	}
+
+	users["201"] = hy("x")
+	if got := indexOf(s.payload(), "201"); got != 3 {
+		t.Fatalf("new user must not land on a hole, want index 3, got %d", got)
+	}
+
+	// The reset start() performs after a successful process start.
+	s.slots = nil
+	users["202"] = hy("y")
+	compacted := s.payload()
+	if len(compacted) != 2 {
+		t.Fatalf("after a restart the table should be compact, want 2 entries, got %d", len(compacted))
 	}
 }
 
