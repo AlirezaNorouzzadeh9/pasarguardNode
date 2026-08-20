@@ -174,15 +174,20 @@ func (s *SingBox) GetStats(ctx context.Context, request *common.StatRequest) (*c
 }
 
 // splitStatName breaks "user>>>alice>>>traffic>>>downlink" into the three
-// fields the panel expects. Anything that does not match that shape is passed
-// through under its own name rather than dropped, so an unexpected counter is
-// visible instead of silently missing.
+// fields the panel expects, in the SAME slots xray's parseStatName fills:
+// Name = the entity ("alice"), Type = the direction ("downlink"), Link =
+// "traffic". The panel decides up vs down by Type == "uplink"/"downlink", so
+// putting the counter category ("user"/"inbound"/"outbound") there — as an
+// earlier version did — made it count every sing-box outbound byte as
+// downlink and drop per-inbound counters entirely. Anything that does not
+// match the four-part shape is passed through under its own name rather than
+// dropped, so an unexpected counter is visible instead of silently missing.
 func splitStatName(raw string) (name, kind, link string) {
 	parts := strings.Split(raw, ">>>")
 	if len(parts) != 4 {
 		return raw, "", ""
 	}
-	return parts[1], parts[0], parts[3]
+	return parts[1], parts[3], parts[2]
 }
 
 // GetSysStats reports process-level numbers. sing-box does not expose the

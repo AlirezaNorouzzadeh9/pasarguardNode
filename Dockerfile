@@ -47,7 +47,8 @@ FROM alpine:latest
 
 LABEL org.opencontainers.image.source="https://github.com/PasarGuard/node"
 
-RUN apk update && apk add --no-cache wireguard-tools nftables iproute2 procps openvpn iptables
+RUN apk update && apk add --no-cache wireguard-tools nftables iproute2 procps openvpn iptables \
+      strongswan xl2tpd ppp
 
 WORKDIR /app
 COPY --from=builder /src/main /app/main
@@ -59,9 +60,17 @@ COPY --from=singbox /out/sing-box /usr/local/bin/sing-box
 # runtime binary only shows up when a user tries to connect, long after the node
 # has reported itself healthy.
 RUN set -e; \
-    for bin in wg nft ip openvpn iptables sing-box; do \
+    for bin in wg nft ip openvpn iptables sing-box swanctl xl2tpd pppd; do \
         command -v "$bin" >/dev/null || { echo "missing runtime dependency: $bin" >&2; exit 1; }; \
     done; \
+    # charon is a daemon, not on PATH; the backend probes these two locations.
+    { test -x /usr/lib/strongswan/charon || test -x /usr/lib/ipsec/charon; } \
+        || { echo "missing runtime dependency: charon" >&2; exit 1; }; \
+    # EAP/CHAP crypto lives in plugins; without openssl among them every L2TP
+    # auth fails at the MD4/DES step no matter the password.
+    ls /usr/lib/strongswan/plugins/ 2>/dev/null | grep -q openssl \
+        || ls /usr/lib/ipsec/plugins/ 2>/dev/null | grep -q openssl \
+        || { echo "missing strongswan openssl plugin" >&2; exit 1; }; \
     openvpn --version | head -1; \
     sing-box version | head -1; \
     # The patched endpoint and the stats tag are the two things that make this

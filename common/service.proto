@@ -18,6 +18,9 @@ enum BackendType {
   WIREGUARD = 1;
   OPENVPN = 2;
   SINGBOX = 3;
+  // 4 was L2TP before the ikev2/l2tp drop and stayed unused since, so the
+  // restored backend takes its old number back.
+  L2TP = 4;
 }
 
 message Backend {
@@ -153,6 +156,14 @@ message Openvpn {
     string fingerprint = 2;
 }
 
+message Ikev2 {
+    // CHAP credentials for the L2TP/PPP layer. The message keeps its ikev2
+    // name (and Proxy field 8) from before the drop, because that is the key
+    // the panel's stored proxy settings still use.
+    string username = 1;
+    string password = 2;
+}
+
 message Proxy {
     Vmess vmess = 1;
     Vless vless = 2;
@@ -161,6 +172,7 @@ message Proxy {
     Wireguard wireguard = 5;
     Hysteria hysteria = 6;
     Openvpn openvpn = 7;
+    Ikev2 ikev2 = 8;
 }
 
 message User {

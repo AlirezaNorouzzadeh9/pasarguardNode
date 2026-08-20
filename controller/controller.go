@@ -13,6 +13,7 @@ import (
 
 	"github.com/pasarguard/node/backend"
 	"github.com/pasarguard/node/backend/openvpn"
+	"github.com/pasarguard/node/backend/l2tp"
 	"github.com/pasarguard/node/backend/singbox"
 	"github.com/pasarguard/node/backend/wireguard"
 	"github.com/pasarguard/node/backend/xray"
@@ -216,6 +217,21 @@ func (c *Controller) StartBackend(ctx context.Context, backendCfg *common.Backen
 			return err
 		}
 
+	case common.BackendType_L2TP:
+		// Like openvpn, the binaries are external (xl2tpd + charon); a missing
+		// one reads better here than as a process dying after "started".
+		if err := l2tp.CheckDeps(); err != nil {
+			return err
+		}
+		config, err := l2tp.NewConfig(backendCfg.GetConfig())
+		if err != nil {
+			return err
+		}
+		newBackend, err = l2tp.New(c.cfg, config, backendCfg.GetUsers())
+		if err != nil {
+			return err
+		}
+
 	default:
 		return errors.New("invalid backend type")
 	}
@@ -269,10 +285,10 @@ func backendInstanceID(t common.BackendType, configStr string) string {
 	switch t {
 	case common.BackendType_WIREGUARD:
 		field = "interface_name"
-	case common.BackendType_OPENVPN:
-		// An OpenVPN core is one or more openvpn processes with their own ports
-		// and subnet, so several can coexist. The inbound tag is what tells them
-		// apart — the same thing the panel names the core's inbound by.
+	case common.BackendType_OPENVPN, common.BackendType_L2TP:
+		// An OpenVPN or L2TP core is its own process tree with its own ports
+		// and subnet, so several can coexist. The inbound tag is what tells
+		// them apart — the same thing the panel names the core's inbound by.
 		field = "inbound_tag"
 	case common.BackendType_SINGBOX:
 		// A sing-box core is its own process with its own ports, so several can
