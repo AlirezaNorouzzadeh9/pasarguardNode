@@ -19,6 +19,7 @@ type l2tpSession struct {
 	ifname   string
 	tunnelIP string
 	clientIP string
+	tag      string // owning core's inbound tag ("" from hooks written before it existed)
 	pid      int
 	started  int64
 }
@@ -63,6 +64,8 @@ func parseSessionFile(path, ifname string) l2tpSession {
 			s.tunnelIP = v
 		case "client":
 			s.clientIP = v
+		case "tag":
+			s.tag = v
 		case "pid":
 			s.pid, _ = strconv.Atoi(v)
 		case "started":

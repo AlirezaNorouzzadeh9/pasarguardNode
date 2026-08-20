@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/pasarguard/node/backend/ipsec"
@@ -231,8 +232,10 @@ func (o *L2TP) SyncUser(ctx context.Context, user *common.User) error {
 }
 
 func (o *L2TP) SyncUsers(ctx context.Context, users []*common.User) error {
-	o.users.replaceAll(users)
-	return o.reloadUsers()
+	removed := o.users.replaceAll(users)
+	err := o.reloadUsers()
+	o.killSessions(removed)
+	return err
 }
 
 func (o *L2TP) UpdateUsers(ctx context.Context, users []*common.User) error {
@@ -240,21 +243,56 @@ func (o *L2TP) UpdateUsers(ctx context.Context, users []*common.User) error {
 }
 
 func (o *L2TP) UpdateUsersAndRestart(ctx context.Context, users []*common.User) error {
+	// Restart kills xl2tpd, which hangs up every pppd child — no orphan possible.
 	o.users.replaceAll(users)
 	return o.Restart()
 }
 
 func (o *L2TP) applyUsers(users []*common.User) error {
+	var revoked []string
 	for _, u := range users {
-		o.users.applyUser(u)
+		if username, _, removed := o.users.applyUser(u); removed {
+			revoked = append(revoked, username)
+		}
 	}
-	return o.reloadUsers()
+	err := o.reloadUsers()
+	o.killSessions(revoked)
+	return err
 }
 
 // reloadUsers rewrites chap-secrets from the current user set. pppd reads it per
 // authentication, so new sessions immediately see the change; existing sessions
-// keep running until they reconnect (best-effort, matching xl2tpd's model).
+// are handled by killSessions — chap-secrets alone would let a revoked user's
+// live tunnel run until they chose to reconnect.
 func (o *L2TP) reloadUsers() error { return o.writeChapSecrets() }
+
+// killSessions terminates the live PPP sessions of the given (revoked)
+// usernames by signalling their pppd processes. pppd tears the link down on
+// SIGTERM and runs the ip-down hook, which removes the session file. Sessions
+// tagged for another core are left alone: the same username may legitimately
+// still have access there.
+func (o *L2TP) killSessions(usernames []string) {
+	if len(usernames) == 0 {
+		return
+	}
+	revoked := make(map[string]struct{}, len(usernames))
+	for _, u := range usernames {
+		revoked[u] = struct{}{}
+	}
+	for _, s := range readSessions() {
+		if _, ok := revoked[s.user]; !ok || s.pid <= 0 {
+			continue
+		}
+		if s.tag != "" && s.tag != o.config.InboundTag {
+			continue
+		}
+		if p, err := os.FindProcess(s.pid); err == nil {
+			if err := p.Signal(syscall.SIGTERM); err == nil {
+				o.emitLogf("Info", "l2tp: terminated revoked user %s's session (%s)", s.user, s.ifname)
+			}
+		}
+	}
+}
 
 func (o *L2TP) GetOutboundsLatency(ctx context.Context, request *common.LatencyRequest) (*common.LatencyResponse, error) {
 	return &common.LatencyResponse{Latencies: []*common.Latency{}}, nil

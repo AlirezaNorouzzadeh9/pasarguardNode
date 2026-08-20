@@ -74,6 +74,17 @@ func (o *L2TP) writeIPScripts() error {
 		"{\n" +
 		"  echo \"user=$PEERNAME\"\n" +
 		"  echo \"tunnel_ip=$REMOTE\"\n" +
+		// The client's real WAN address, when the LNS provides it. pppd exports
+		// REMOTENUMBER only if it was given a `remotenumber` option — xl2tpd
+		// (<= 1.3.20) never passes the peer address to pppd, so on this stack
+		// the value is empty and the poll loop falls back to the tunnel IP
+		// (distinct per device, so device counting stays correct; only the
+		// displayed address is the pool-internal one). Kept so a stack that
+		// does provide it is picked up with no further change.
+		"  echo \"client=$REMOTENUMBER\"\n" +
+		// The owning core, so multiple L2TP cores sharing this directory can
+		// each account (and tear down) only their own sessions.
+		"  echo \"tag=" + o.config.InboundTag + "\"\n" +
 		"  echo \"pid=${PPPD_PID:-0}\"\n" +
 		"  echo \"started=$(date +%s)\"\n" +
 		"} > \"$d/$IF\"\n"

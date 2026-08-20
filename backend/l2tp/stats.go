@@ -28,7 +28,15 @@ func (o *L2TP) pollLoop(ctx context.Context) {
 // Sessions come from the pppd ip-up hook
 // (interface -> username); byte counters from the interface statistics.
 func (o *L2TP) poll() {
-	sessions := readSessions()
+	// The session directory is shared by every L2TP core; only account for the
+	// sessions this core owns (untagged files predate the tag and are kept).
+	var sessions []l2tpSession
+	for _, s := range readSessions() {
+		if s.tag != "" && s.tag != o.config.InboundTag {
+			continue
+		}
+		sessions = append(sessions, s)
+	}
 	perUser := make(map[string][]l2tpSession)
 	present := make(map[string]struct{})
 	for _, s := range sessions {
