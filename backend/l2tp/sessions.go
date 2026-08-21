@@ -31,8 +31,41 @@ type l2tpSession struct {
 	started  int64
 }
 
-// readSessions returns every session the ip-up hook has recorded. A missing
-// directory (no one connected yet) is not an error.
+// sessionIsAlive reports whether the session a record describes is still
+// running. A package variable so tests can decide without a live pppd.
+var sessionIsAlive = func(s l2tpSession) bool {
+	if s.pid > 0 {
+		return processIsPppd(s.pid)
+	}
+	// No pid was recorded, so fall back to the interface: the kernel destroys
+	// it along with the session.
+	_, err := os.Stat(filepath.Join("/sys/class/net", s.ifname))
+	return err == nil
+}
+
+// processIsPppd reports whether pid is a live pppd.
+//
+// It answers two questions at once, and both matter. os.FindProcess never fails
+// on Unix — it does not look — so a pid belonging to a session that ended long
+// ago would take a signal meant for that session, hitting whatever unrelated
+// process the kernel has since given the number to. And a pid that is simply
+// gone tells us the session behind it is over.
+func processIsPppd(pid int) bool {
+	comm, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "comm"))
+	if err != nil {
+		return false
+	}
+	return strings.Contains(string(comm), "pppd")
+}
+
+// readSessions returns every session the ip-up hook has recorded and that is
+// still running. A missing directory (no one connected yet) is not an error.
+//
+// Records whose pppd is gone are deleted here. pppd killed outright — OOM,
+// SIGKILL — never runs the ip-down hook, so its record used to stay behind for
+// the life of the node: every poll refreshed the user's online timestamp from
+// it, so the panel showed them connected on a tunnel IP forever, and a revoke
+// would signal their long-dead pid.
 func readSessions() []l2tpSession {
 	entries, err := os.ReadDir(sessionStateDir)
 	if err != nil {
@@ -43,10 +76,16 @@ func readSessions() []l2tpSession {
 		if e.IsDir() {
 			continue
 		}
-		s := parseSessionFile(filepath.Join(sessionStateDir, e.Name()), e.Name())
-		if s.user != "" && s.ifname != "" {
-			out = append(out, s)
+		path := filepath.Join(sessionStateDir, e.Name())
+		s := parseSessionFile(path, e.Name())
+		if s.user == "" || s.ifname == "" {
+			continue
 		}
+		if !sessionIsAlive(s) {
+			_ = os.Remove(path)
+			continue
+		}
+		out = append(out, s)
 	}
 	return out
 }
