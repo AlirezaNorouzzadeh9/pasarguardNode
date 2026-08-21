@@ -234,9 +234,34 @@ func (s *SingBox) start() error {
 	// without misbilling anybody. The next pushUsers lays users out afresh.
 	s.usersMu.Lock()
 	s.slots = nil
+	stop := s.pushStop
 	s.usersMu.Unlock()
 
+	go s.limitLoop(stop)
+
 	return nil
+}
+
+// limitLoop keeps users within their connection limit.
+//
+// Unlike openvpn there is no authentication callback to refuse a connection in,
+// so this watches instead: a client over its limit is closed shortly after it
+// appears. The interval is the same order as the panel's usage poll — often
+// enough that sharing is not worth the trouble, rarely enough that a node with
+// many connections is not spending its time listing them.
+func (s *SingBox) limitLoop(stop <-chan struct{}) {
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-stop:
+			return
+		case <-ticker.C:
+			ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+			s.enforceIPLimits(ctx)
+			cancel()
+		}
+	}
 }
 
 // waitReady polls clash_api until it answers. Reporting the backend started
@@ -718,6 +743,8 @@ type userCredentials struct {
 	vmessUUID   string
 	trojanPass  string
 	shadowsocks string
+	// Source addresses this user may be connected from at once. Zero = no limit.
+	ipLimit uint32
 }
 
 func (c userCredentials) secret(kind credentialKind) string {
@@ -768,6 +795,7 @@ func (s *SingBox) credentials(u *common.User) (email string, creds userCredentia
 		vmessUUID:   strings.TrimSpace(proxies.GetVmess().GetId()),
 		trojanPass:  strings.TrimSpace(proxies.GetTrojan().GetPassword()),
 		shadowsocks: strings.TrimSpace(proxies.GetShadowsocks().GetPassword()),
+		ipLimit:     u.GetIpLimit(),
 	}
 	if creds.empty() {
 		return "", userCredentials{}, false
@@ -894,8 +922,80 @@ func (c *clashClient) replaceUsers(ctx context.Context, tag string, users []clas
 	return nil
 }
 
+// clashConnection is one live connection as clash_api reports it. sing-box puts
+// the whole inbound context in `metadata`, which is where the two things worth
+// knowing live: who authenticated, and where they came from.
+type clashConnection struct {
+	ID       string `json:"id"`
+	Metadata struct {
+		User    string `json:"user"`
+		SrcIP   string `json:"sourceIP"`
+		SrcPort string `json:"sourcePort"`
+		Inbound string `json:"inboundTag"`
+	} `json:"metadata"`
+	Start string `json:"start"`
+}
+
+// connections lists what is live right now.
+//
+// The v2ray_api stats the usage poll reads carry bytes and nothing else, so
+// this is the only way to learn how many places a user is connected from —
+// stock sing-box, no patch involved.
+func (c *clashClient) connections(ctx context.Context) ([]clashConnection, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+"/connections", nil)
+	if err != nil {
+		return nil, err
+	}
+	c.auth(req)
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("clash_api returned %d for /connections", resp.StatusCode)
+	}
+
+	var payload struct {
+		Connections []clashConnection `json:"connections"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return nil, err
+	}
+	return payload.Connections, nil
+}
+
+// closeConnection ends one live connection.
+//
+// This is what sing-box has and xray does not: a way to drop a single
+// connection rather than only refusing the next one.
+func (c *clashClient) closeConnection(ctx context.Context, id string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, c.base+"/connections/"+id, nil)
+	if err != nil {
+		return err
+	}
+	c.auth(req)
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
+		return fmt.Errorf("clash_api returned %d closing connection %s", resp.StatusCode, id)
+	}
+	return nil
+}
+
 func (c *clashClient) auth(req *http.Request) {
 	if c.secret != "" {
 		req.Header.Set("Authorization", "Bearer "+c.secret)
 	}
+}
+
+// limitFor returns how many source addresses a user may be connected from at
+// once, 0 meaning no limit.
+func (s *SingBox) limitFor(email string) uint32 {
+	s.usersMu.Lock()
+	defer s.usersMu.Unlock()
+	return s.users[email].ipLimit
 }

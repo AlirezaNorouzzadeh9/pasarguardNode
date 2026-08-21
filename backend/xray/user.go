@@ -123,6 +123,12 @@ func (x *Xray) SyncUser(ctx context.Context, user *common.User) error {
 	x.syncMu.Lock()
 	defer x.syncMu.Unlock()
 
+	// The limiter calls this too, with a deliberately stripped user, so only a
+	// sync that carries inbounds is treated as news about the user's limit.
+	if x.ipLimits != nil && len(user.GetInbounds()) > 0 {
+		x.ipLimits.track(user)
+	}
+
 	proxySetting, err := setupUserAccount(user)
 	if err != nil {
 		return err
@@ -163,6 +169,12 @@ func (x *Xray) SyncUser(ctx context.Context, user *common.User) error {
 func (x *Xray) SyncUsers(ctx context.Context, users []*common.User) error {
 	x.syncMu.Lock()
 	defer x.syncMu.Unlock()
+
+	if x.ipLimits != nil {
+		for _, u := range users {
+			x.ipLimits.track(u)
+		}
+	}
 
 	candidate, err := x.config.Clone()
 	if err != nil {

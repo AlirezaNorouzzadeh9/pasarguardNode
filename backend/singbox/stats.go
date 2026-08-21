@@ -3,6 +3,7 @@ package singbox
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -219,6 +220,98 @@ func (s *SingBox) GetUserOnlineStats(_ context.Context, email string) (*common.O
 	return &common.OnlineStatResponse{Name: email}, nil
 }
 
-func (s *SingBox) GetUserOnlineIpListStats(_ context.Context, email string) (*common.StatsOnlineIpListResponse, error) {
-	return &common.StatsOnlineIpListResponse{Name: email}, nil
+// GetUserOnlineIpListStats reports where a user is connected from.
+//
+// The v2ray_api stats this backend reads for usage carry bytes and nothing
+// else, so this comes from clash_api's live connection list instead: sing-box
+// records the authenticated user and the source address of every connection,
+// which is exactly the pair needed. Stock sing-box, no patch involved.
+func (s *SingBox) GetUserOnlineIpListStats(ctx context.Context, email string) (*common.StatsOnlineIpListResponse, error) {
+	response := &common.StatsOnlineIpListResponse{Name: email, Ips: make(map[string]int64)}
+
+	conns, err := s.client.connections(ctx)
+	if err != nil {
+		// Reporting nothing is better than failing the panel's poll for every
+		// other backend on this node.
+		return response, nil
+	}
+
+	now := time.Now().Unix()
+	for _, conn := range conns {
+		if s.userOf(conn) != email {
+			continue
+		}
+		if ip := conn.Metadata.SrcIP; ip != "" {
+			response.Ips[ip] = now
+		}
+	}
+	return response, nil
+}
+
+// userOf resolves the user a connection belongs to.
+//
+// sing-box names the authenticated user directly. It may also name the slot's
+// placeholder for a user whose credentials have just been withdrawn, which
+// belongs to nobody.
+func (s *SingBox) userOf(conn clashConnection) string {
+	name := conn.Metadata.User
+	if name == "" || name == freeSlotName {
+		return ""
+	}
+	return name
+}
+
+// enforceIPLimits closes the connections a user is over their limit by.
+//
+// The newest go: the connections already running belong to someone using the
+// service, and closing one of those to make room for a newcomer interrupts the
+// wrong person. Connections are grouped by source address rather than counted
+// one by one — a single client opens many at once, and each is not a device.
+func (s *SingBox) enforceIPLimits(ctx context.Context) {
+	conns, err := s.client.connections(ctx)
+	if err != nil {
+		return
+	}
+
+	// user -> source ip -> the connections from it, and when it first appeared.
+	perUser := make(map[string]map[string][]clashConnection)
+	firstSeen := make(map[string]map[string]string)
+	for _, conn := range conns {
+		user := s.userOf(conn)
+		ip := conn.Metadata.SrcIP
+		if user == "" || ip == "" {
+			continue
+		}
+		if perUser[user] == nil {
+			perUser[user] = make(map[string][]clashConnection)
+			firstSeen[user] = make(map[string]string)
+		}
+		perUser[user][ip] = append(perUser[user][ip], conn)
+		if at, seen := firstSeen[user][ip]; !seen || conn.Start < at {
+			firstSeen[user][ip] = conn.Start
+		}
+	}
+
+	for user, byIP := range perUser {
+		limit := s.limitFor(user)
+		if limit == 0 || uint32(len(byIP)) <= limit {
+			continue
+		}
+
+		addresses := make([]string, 0, len(byIP))
+		for ip := range byIP {
+			addresses = append(addresses, ip)
+		}
+		// Oldest first, so everything past the limit is the newest.
+		sort.SliceStable(addresses, func(i, j int) bool {
+			return firstSeen[user][addresses[i]] < firstSeen[user][addresses[j]]
+		})
+
+		for _, ip := range addresses[limit:] {
+			for _, conn := range byIP[ip] {
+				_ = s.client.closeConnection(ctx, conn.ID)
+			}
+			s.emitLogf("Info", "singbox: %s is over their %d-address limit; closed the newest (%s)", user, limit, ip)
+		}
+	}
 }

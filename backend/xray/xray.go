@@ -21,6 +21,8 @@ type Xray struct {
 	cancelFunc context.CancelFunc
 	mu         sync.RWMutex
 	syncMu     sync.Mutex
+	// Who has a connection limit, and who is currently being held to it.
+	ipLimits *ipLimiter
 }
 
 func New(ctx context.Context, xrayConfig *Config, users []*common.User, apiPort, metricPort int, cfg *config.Config) (*Xray, error) {
@@ -45,7 +47,9 @@ func New(ctx context.Context, xrayConfig *Config, users []*common.User, apiPort,
 		cancelFunc: xCancel,
 		cfg:        cfg,
 		metricPort: metricPort,
+		ipLimits:   newIPLimiter(),
 	}
+	go xray.limitLoop(ctx)
 
 	start := time.Now()
 
