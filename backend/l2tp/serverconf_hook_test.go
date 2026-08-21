@@ -79,3 +79,34 @@ func TestIPUpHookRecordsTheUser(t *testing.T) {
 		}
 	}
 }
+
+// The down hook is the only place a session's closing counters exist: the
+// interface is destroyed with the session, so whatever it moved since the last
+// poll is gone unless the hook writes it down first.
+func TestIPDownHookRecordsTheClosingCounters(t *testing.T) {
+	dir := t.TempDir()
+	o := &L2TP{config: &Config{InboundTag: "l2tp-test", workDir: dir}}
+	if err := o.writeIPScripts(); err != nil {
+		t.Fatalf("writeIPScripts: %v", err)
+	}
+	body, err := os.ReadFile(o.ipDownScriptPath())
+	if err != nil {
+		t.Fatalf("read ip-down: %v", err)
+	}
+	text := string(body)
+	for _, want := range []string{
+		sessionFinalDir, // where the poll loop looks
+		"rx_bytes",      // the counters the baseline is taken from
+		"BYTES_RCVD",    // pppd's fallback once the interface is gone
+		"BYTES_SENT",
+		"user=", // attribution, read back from the session file
+		"tag=",  // which core owns it
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("ip-down hook does not mention %q", want)
+		}
+	}
+	if !strings.Contains(text, "rm -f") {
+		t.Error("ip-down hook no longer removes the session file; the user would show online forever")
+	}
+}

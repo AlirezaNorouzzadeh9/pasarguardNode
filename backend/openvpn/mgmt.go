@@ -36,6 +36,11 @@ type mgmtClient struct {
 	decider    authDecider
 	logf       func(format string, args ...any)
 
+	// Called when a session ends, with the totals openvpn reports for it.
+	// The status poll cannot see these: a disconnected client vanishes from
+	// `status 3`, taking whatever it moved since the last poll with it.
+	onSessionEnd func(cid, commonName string, rx, tx int64)
+
 	writeMu sync.Mutex
 	conn    net.Conn
 	rw      *bufio.ReadWriter
@@ -187,7 +192,14 @@ func (m *mgmtClient) finishConnect() {
 }
 
 // finishDisconnect releases the disconnecting client id from the session set so
-// the device-limit counter stays accurate.
+// the device-limit counter stays accurate, and reports the session's final byte
+// totals.
+//
+// openvpn puts bytes_received/bytes_sent in the disconnect environment. They are
+// the only record of what the session moved since the last status poll — the row
+// itself is already gone from `status 3` by the time the next poll runs, so
+// without this the tail of every session (up to a full poll interval at line
+// rate) was simply lost, and sessions shorter than one interval were invisible.
 func (m *mgmtClient) finishDisconnect() {
 	cid := m.pendingCID
 	env := m.pendingEnv
@@ -195,8 +207,14 @@ func (m *mgmtClient) finishDisconnect() {
 	if cid == "" || env == nil {
 		return
 	}
+	cn := env["common_name"]
+	if m.onSessionEnd != nil {
+		rx, _ := strconv.ParseInt(env["bytes_received"], 10, 64)
+		tx, _ := strconv.ParseInt(env["bytes_sent"], 10, 64)
+		m.onSessionEnd(cid, cn, rx, tx)
+	}
 	if m.decider != nil {
-		m.decider.releaseSession(env["common_name"], cid)
+		m.decider.releaseSession(cn, cid)
 	}
 }
 

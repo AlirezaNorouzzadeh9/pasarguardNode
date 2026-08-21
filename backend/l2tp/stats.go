@@ -3,6 +3,7 @@ package l2tp
 import (
 	"context"
 	"errors"
+	"os"
 	"runtime"
 	"time"
 
@@ -44,11 +45,54 @@ func (o *L2TP) poll() {
 		present[s.ifname] = struct{}{}
 	}
 
+	// Sessions that ended since the last tick, from the records the ip-down hook
+	// leaves. Same per-core filter as live sessions.
+	var finals []finalRecord
+	for _, rec := range readFinalRecords() {
+		if rec.tag != "" && rec.tag != o.config.InboundTag {
+			continue
+		}
+		finals = append(finals, rec)
+	}
+
 	var samples []stats.Sample
 
 	o.mu.Lock()
 	growthRx := make(map[string]int64)
 	growthTx := make(map[string]int64)
+
+	// Ended sessions are settled BEFORE the live ones. Their closing counters
+	// have to be measured against the baseline of the interface as THEY left it,
+	// and ppp0 is handed to the next caller within seconds: settle afterwards and
+	// the baseline would already belong to somebody else. Clearing the baseline
+	// here is also what makes the reused interface correct — the kernel counters
+	// restart at zero with it, so the next session is measured from zero too.
+	for _, rec := range finals {
+		last, seen := o.ifSeen[rec.ifname]
+		dRx, dTx := rec.rx, rec.tx
+		if seen {
+			dRx, dTx = rec.rx-last[0], rec.tx-last[1]
+		}
+		// The hook falls back to pppd's link totals when the interface is already
+		// gone, and those are counted a layer below /sys — close, but not
+		// guaranteed to be greater. Bill nothing rather than the whole session.
+		if dRx < 0 {
+			dRx = 0
+		}
+		if dTx < 0 {
+			dTx = 0
+		}
+		delete(o.ifSeen, rec.ifname)
+		growthRx[rec.user] += dRx
+		growthTx[rec.user] += dTx
+		if _, live := perUser[rec.user]; !live {
+			// Nothing of theirs is running any more, but this last piece still
+			// has to reach the tracker below.
+			perUser[rec.user] = nil
+		}
+		_ = os.Remove(rec.path)
+	}
+
 	for _, s := range sessions {
 		rx, tx := ifaceBytes(s.ifname)
 		last := o.ifSeen[s.ifname]
@@ -63,7 +107,10 @@ func (o *L2TP) poll() {
 		growthRx[s.user] += dRx
 		growthTx[s.user] += dTx
 	}
-	// Forget interfaces whose session has ended (their final bytes are counted).
+	// Forget interfaces with neither a live session nor a final record — pppd was
+	// killed outright, so the hook never ran and the tail is unrecoverable. The
+	// baseline still has to go, or a later session on the same name would be
+	// measured against a stranger's counters.
 	for ifn := range o.ifSeen {
 		if _, ok := present[ifn]; !ok {
 			delete(o.ifSeen, ifn)

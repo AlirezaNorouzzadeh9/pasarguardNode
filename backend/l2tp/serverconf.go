@@ -89,10 +89,46 @@ func (o *L2TP) writeIPScripts() error {
 		"  echo \"started=$(date +%s)\"\n" +
 		"} > \"$d/$IF\"\n"
 
+	// The poll loop can only see interfaces that still exist, so a session that
+	// ends between two ticks takes its last seconds of traffic with it — at line
+	// rate that is the better part of a poll interval per disconnect, and a
+	// session shorter than one interval was never counted at all. pppd runs this
+	// with the session's totals in the environment, which is the only place they
+	// survive; they are written out for the poll loop to reconcile.
+	//
+	// The user and owning core come from the session file rather than PEERNAME:
+	// it is the same value the poll loop attributed traffic to all along, and it
+	// is there whether or not pppd exports the name at teardown.
 	down := "#!/bin/sh\n" +
 		"# PasarGuard L2TP session accounting hook (managed; do not edit).\n" +
 		"IF=\"${IFNAME:-$PPP_IFACE}\"\n" +
-		"[ -n \"$IF\" ] && rm -f " + sessionStateDir + "/\"$IF\"\n" +
+		"[ -n \"$IF\" ] || exit 0\n" +
+		"d=" + sessionStateDir + "\n" +
+		"f=\"$d/$IF\"\n" +
+		"if [ -f \"$f\" ]; then\n" +
+		"  user=$(sed -n 's/^user=//p' \"$f\")\n" +
+		"  tag=$(sed -n 's/^tag=//p' \"$f\")\n" +
+		// Prefer the kernel counters the poll loop takes its baseline from; the
+		// interface may already be gone, in which case pppd's own link totals
+		// are the fallback (same quantity, counted a layer lower).
+		"  s=/sys/class/net/$IF/statistics\n" +
+		"  rx=$(cat \"$s/rx_bytes\" 2>/dev/null)\n" +
+		"  tx=$(cat \"$s/tx_bytes\" 2>/dev/null)\n" +
+		"  [ -n \"$rx\" ] || rx=\"${BYTES_RCVD:-0}\"\n" +
+		"  [ -n \"$tx\" ] || tx=\"${BYTES_SENT:-0}\"\n" +
+		"  fin=" + sessionFinalDir + "\n" +
+		"  mkdir -p \"$fin\"; umask 077\n" +
+		"  {\n" +
+		"    echo \"user=$user\"\n" +
+		"    echo \"tag=$tag\"\n" +
+		"    echo \"ifname=$IF\"\n" +
+		"    echo \"rx=$rx\"\n" +
+		"    echo \"tx=$tx\"\n" +
+		// Unique per run: ppp0 is recycled quickly, and one final record must
+		// never overwrite another still waiting to be counted.
+		"  } > \"$fin/$IF.$$.$(date +%s)\"\n" +
+		"fi\n" +
+		"rm -f \"$f\"\n" +
 		"exit 0\n"
 
 	// Written next to the core's other generated files and named directly in
@@ -111,6 +147,9 @@ func (o *L2TP) writeIPScripts() error {
 		if err := os.WriteFile(path, []byte(content), 0o755); err != nil {
 			return err
 		}
+	}
+	if err := os.MkdirAll(sessionFinalDir, 0o700); err != nil {
+		return err
 	}
 	return os.MkdirAll(sessionStateDir, 0o700)
 }

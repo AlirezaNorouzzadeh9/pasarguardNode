@@ -51,6 +51,12 @@ type OpenVPN struct {
 	sessionSeen map[string]clientStatus
 	// per-CN cumulative byte counters fed to the stats tracker.
 	cnCumulative map[string]*clientStatus
+	// Final totals of sessions that ended since the last poll, from the
+	// management interface's disconnect event. Queued rather than applied
+	// immediately: a `status 3` reply already in flight may still carry a row
+	// for the departing client, and collectStats must fold that row in before
+	// the final total is measured against it.
+	endedSessions []endedSession
 
 	process   *exec.Cmd
 	waitDone  chan struct{}
@@ -115,6 +121,7 @@ func New(cfg *config.Config, ovConfig *Config, users []*common.User) (*OpenVPN, 
 	}
 
 	o.mgmt = newMgmtClient(ovConfig.mgmtSocketPath(), o.users, o.emitLogf2)
+	o.mgmt.onSessionEnd = o.recordSessionEnd
 	if err := o.mgmt.connect(); err != nil {
 		o.stopProcess()
 		cancel()
@@ -244,6 +251,7 @@ func (o *OpenVPN) Restart() error {
 	// Reconnect management after restart.
 	o.mgmt.close()
 	o.mgmt = newMgmtClient(o.config.mgmtSocketPath(), o.users, o.emitLogf2)
+	o.mgmt.onSessionEnd = o.recordSessionEnd
 	if err := o.mgmt.connect(); err != nil {
 		return err
 	}

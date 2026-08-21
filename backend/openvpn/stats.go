@@ -31,12 +31,81 @@ func (o *OpenVPN) statsLoop(ctx context.Context) {
 	}
 }
 
+// endedSession is a session's final byte totals, reported by the management
+// interface as the client disconnects.
+type endedSession struct {
+	clientID   string
+	commonName string
+	rx         int64
+	tx         int64
+}
+
+// recordSessionEnd queues a finished session's totals for the next poll.
+//
+// Called from the management reader goroutine; the poll loop applies it. See
+// endedSessions on the struct for why this is queued rather than applied here.
+func (o *OpenVPN) recordSessionEnd(cid, commonName string, rx, tx int64) {
+	if cid == "" || commonName == "" {
+		return
+	}
+	o.mu.Lock()
+	o.endedSessions = append(o.endedSessions, endedSession{clientID: cid, commonName: commonName, rx: rx, tx: tx})
+	o.mu.Unlock()
+}
+
+// foldEndedSessionsLocked adds what each finished session moved after its last
+// polled row into this poll's per-CN growth.
+//
+// Runs after the status rows have been folded in, so a row still carrying a
+// departing client — the `status 3` reply may have been in flight when it left —
+// has already advanced that session's baseline and is not counted twice. A
+// session that both began and ended between two polls has no baseline at all,
+// and counts in full.
+//
+// Caller holds o.mu.
+func (o *OpenVPN) foldEndedSessionsLocked(perCN map[string]*clientStatus) {
+	ended := o.endedSessions
+	o.endedSessions = nil
+
+	for _, fin := range ended {
+		dRx, dTx := fin.rx, fin.tx
+		if prev, ok := o.sessionSeen[fin.clientID]; ok {
+			dRx = fin.rx - prev.BytesReceived
+			dTx = fin.tx - prev.BytesSent
+			delete(o.sessionSeen, fin.clientID)
+		}
+		// The disconnect totals and the status rows are the same counters, so a
+		// negative difference is not expected; bill nothing rather than mistake
+		// it for a fresh session and bill the whole thing again.
+		if dRx < 0 {
+			dRx = 0
+		}
+		if dTx < 0 {
+			dTx = 0
+		}
+		if dRx == 0 && dTx == 0 {
+			continue
+		}
+		agg := perCN[fin.commonName]
+		if agg == nil {
+			agg = &clientStatus{CommonName: fin.commonName}
+			perCN[fin.commonName] = agg
+		}
+		agg.BytesReceived += dRx
+		agg.BytesSent += dTx
+	}
+}
+
 // collectStats reads `status 3` and accumulates per-CN cumulative counters.
 //
 // OpenVPN reports per-session (per ClientID) cumulative byte counts. A user (CN)
 // may have several concurrent sessions (duplicate-cn) and reconnects create new
 // ClientIDs. We accumulate each session's growth into a per-CN cumulative total
 // and hand that to the tracker, which computes the reset-delta for the panel.
+//
+// Sessions that ended since the last poll are folded in from the queue their
+// disconnect events filled: their rows are already gone from `status 3`, so the
+// poll alone would drop everything they moved after the previous tick.
 func (o *OpenVPN) collectStats() {
 	if o.mgmt == nil {
 		return
@@ -78,7 +147,11 @@ func (o *OpenVPN) collectStats() {
 			agg.RealAddress = row.RealAddress
 		}
 	}
-	// Drop sessions that disappeared between polls.
+	o.foldEndedSessionsLocked(perCN)
+
+	// Drop sessions that disappeared between polls without a disconnect event
+	// (the daemon died, or the event was missed): their tail is unrecoverable,
+	// but their baseline must not linger.
 	for cid := range o.sessionSeen {
 		if _, ok := seenSessions[cid]; !ok {
 			delete(o.sessionSeen, cid)
