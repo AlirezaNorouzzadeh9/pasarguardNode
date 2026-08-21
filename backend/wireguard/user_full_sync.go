@@ -24,6 +24,9 @@ func (wg *WireGuard) syncUsersFull(users []*common.User) error {
 		return nil
 	}
 
+	// Their counters go with them the moment the kernel applies the snapshot.
+	wg.sampleDepartingPeers(diff.RemoveKeys)
+
 	psk, _ := wg.config.GetPreSharedKey()
 	peerConfigs, appliedKeys := buildTargetPeerConfigs(diff.TargetPeers, psk)
 

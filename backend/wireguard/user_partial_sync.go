@@ -49,6 +49,9 @@ func (wg *WireGuard) syncUsersPartialReconcile(users []*common.User) error {
 		return err
 	}
 
+	// Their counters go with them the moment the kernel applies the change.
+	wg.sampleDepartingPeers(diff.RemoveKeys)
+
 	if len(diff.PeerConfigs) > 0 {
 		wg.mu.RLock()
 		if err := wg.ensureRunningWithManagerLocked(); err != nil {

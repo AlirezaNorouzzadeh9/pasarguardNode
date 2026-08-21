@@ -5,6 +5,7 @@ import (
 	"net"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pasarguard/node/common"
 	"github.com/pasarguard/node/pkg/stats"
@@ -898,5 +899,75 @@ func mustPeerInfo(email, pubStr string, ips []string) *PeerInfo {
 		Email:      email,
 		PublicKey:  dummyKey(pubStr),
 		AllowedIPs: parsedIPs,
+	}
+}
+
+// A revoked user's last stretch of traffic must be read out of the kernel
+// before the peer is applied away, through the real sync path rather than by
+// calling the sampler directly.
+func TestSyncUsersBillsTheDepartingPeersLastTraffic(t *testing.T) {
+	cfg, err := NewConfig(`{
+		"interface_name":"wg-test",
+		"listen_port":51820,
+		"address":["10.63.0.1/24"]
+	}`)
+	if err != nil {
+		t.Fatalf("failed to create config: %v", err)
+	}
+
+	_, removePub, err := GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("failed to generate key: %v", err)
+	}
+	removeKey, err := wgtypes.ParseKey(removePub)
+	if err != nil {
+		t.Fatalf("failed to parse key: %v", err)
+	}
+
+	ps := NewPeerStore()
+	ps.ReplaceAll([]*PeerInfo{mustPeerInfo("gone@example.com", removePub, []string{"10.63.0.3/32"})})
+
+	// The kernel still holds the peer, with traffic the poll loop has not seen.
+	peerGone := false
+	wg := &WireGuard{
+		config:       cfg,
+		peerStore:    ps,
+		statsTracker: stats.New(),
+		manager: &Manager{
+			iFaceName: "wg-test",
+			client: &fakeWGClient{
+				configureDeviceFn: func(string, wgtypes.Config) error {
+					peerGone = true
+					return nil
+				},
+				deviceFn: func(string) (*wgtypes.Device, error) {
+					if peerGone {
+						return &wgtypes.Device{}, nil
+					}
+					return &wgtypes.Device{Peers: []wgtypes.Peer{{
+						PublicKey:         removeKey,
+						LastHandshakeTime: time.Now().Add(-2 * time.Minute),
+						ReceiveBytes:      1024,
+						TransmitBytes:     2048,
+					}}}, nil
+				},
+			},
+		},
+		state: lifecycleRunning,
+	}
+
+	// Nobody is entitled to the interface any more, so the peer is removed.
+	if err := wg.syncUsersFull(nil); err != nil {
+		t.Fatalf("syncUsersFull: %v", err)
+	}
+
+	var total int64
+	for _, stat := range wg.statsTracker.GetUsersStats(context.Background(), true).GetStats() {
+		if stat.GetName() == "gone@example.com" {
+			total += stat.GetValue()
+		}
+	}
+	if total != 3072 {
+		t.Fatalf("departing peer billed %d bytes, want 1024+2048 — read the counters before applying the removal", total)
 	}
 }

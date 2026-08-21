@@ -58,8 +58,6 @@ func (wg *WireGuard) updateConnectedPeers(ctx context.Context) {
 		return
 	}
 
-	activeHandshakeCutoff := time.Now().Add(-onlineActivityThreshold)
-
 	emailByKey := wg.peerStore.GetEmailMap()
 	samples := make([]stats.Sample, 0, len(device.Peers))
 
@@ -73,9 +71,17 @@ func (wg *WireGuard) updateConnectedPeers(ctx context.Context) {
 		if peer.LastHandshakeTime.IsZero() {
 			continue // never connected
 		}
-		if peer.LastHandshakeTime.Before(activeHandshakeCutoff) {
-			continue // stale/offline peer
-		}
+		// Every peer that has ever completed a handshake is sampled, however
+		// old that handshake is. WireGuard only rekeys about every two minutes
+		// while data flows, so a peer downloading at full rate spends most of
+		// its time past any threshold shorter than that: skipping those peers
+		// stopped their counters being read at all, which showed them offline
+		// mid-transfer and dropped everything they moved between the last
+		// accepted sample and their removal.
+		//
+		// Sampling everything costs nothing to accuracy: the tracker decides
+		// activity from counter growth, not from being handed a sample, and it
+		// ignores one whose values have not changed.
 
 		peerKey := peer.PublicKey.String()
 		email, ok := emailByKey[peerKey]
@@ -94,6 +100,61 @@ func (wg *WireGuard) updateConnectedPeers(ctx context.Context) {
 			Rx:         peer.ReceiveBytes,
 			Tx:         peer.TransmitBytes,
 			EndpointIP: endpointIP,
+		})
+	}
+
+	wg.statsTracker.UpdateStatsBatch(samples)
+}
+
+// sampleDepartingPeers reads the counters of peers that are about to be removed
+// and hands them to the tracker one last time.
+//
+// A peer's byte counts live in the kernel alongside the peer: the moment it is
+// applied away, whatever it moved since the last poll is unrecoverable. The
+// tracker keeps the pending delta of an entry it has been told to remove until
+// the panel collects it, so a final sample taken here is still billed.
+//
+// Best effort by design — a device read that fails costs at most one poll
+// interval of one departing peer's traffic, which is not worth failing a sync
+// over.
+func (wg *WireGuard) sampleDepartingPeers(keys []string) {
+	if len(keys) == 0 {
+		return
+	}
+
+	wg.mu.RLock()
+	mgr := wg.manager
+	wg.mu.RUnlock()
+	if mgr == nil {
+		return
+	}
+
+	device, err := mgr.GetDevice()
+	if err != nil {
+		return
+	}
+
+	departing := make(map[string]struct{}, len(keys))
+	for _, key := range keys {
+		departing[key] = struct{}{}
+	}
+
+	emailByKey := wg.peerStore.GetEmailMap()
+	samples := make([]stats.Sample, 0, len(keys))
+	for _, peer := range device.Peers {
+		peerKey := peer.PublicKey.String()
+		if _, going := departing[peerKey]; !going {
+			continue
+		}
+		email, ok := emailByKey[peerKey]
+		if !ok {
+			continue
+		}
+		samples = append(samples, stats.Sample{
+			PublicKey: peerKey,
+			Email:     email,
+			Rx:        peer.ReceiveBytes,
+			Tx:        peer.TransmitBytes,
 		})
 	}
 
