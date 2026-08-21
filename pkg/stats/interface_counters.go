@@ -48,26 +48,39 @@ func (t *InterfaceCountersTracker) Delta(currentRx, currentTx int64, reset bool)
 	return deltaRx, deltaTx
 }
 
+// buildDeltaStats labels a pair of interface counters with the direction the
+// panel understands.
+//
+// The counters are the server's: rx is what it received from the client, which
+// is the client's UPLOAD, and tx is what it sent to the client, their DOWNLOAD.
+// xray names those uplink and downlink respectively, and the panel reads every
+// backend through that one convention.
+//
+// These two were the other way round, so every backend built on interface
+// counters — wireguard, l2tp, openvpn — reported each user's and each node's
+// traffic mirrored: a node serving downloads showed almost all of it as upload,
+// the opposite of an xray node beside it. Quota was never affected, since the
+// panel bills the sum of both directions.
 func buildDeltaStats(name, link string, rx, tx int64) []*common.Stat {
 	if rx == 0 && tx == 0 {
 		return nil
 	}
 
 	stats := make([]*common.Stat, 0, 2)
-	if tx > 0 {
+	if rx > 0 {
 		stats = append(stats, &common.Stat{
 			Name:  name,
 			Type:  "uplink",
 			Link:  link,
-			Value: tx,
+			Value: rx,
 		})
 	}
-	if rx > 0 {
+	if tx > 0 {
 		stats = append(stats, &common.Stat{
 			Name:  name,
 			Type:  "downlink",
 			Link:  link,
-			Value: rx,
+			Value: tx,
 		})
 	}
 

@@ -30,11 +30,11 @@ func TestStatsTracker_GetStats(t *testing.T) {
 	}
 
 	for _, s := range resp.Stats {
-		if s.Type == "downlink" && s.Value != 1000 {
-			t.Errorf("Expected rx=1000, got %d", s.Value)
+		if s.Type == "uplink" && s.Value != 1000 {
+			t.Errorf("Expected rx=1000 reported as uplink, got %d", s.Value)
 		}
-		if s.Type == "uplink" && s.Value != 2000 {
-			t.Errorf("Expected tx=2000, got %d", s.Value)
+		if s.Type == "downlink" && s.Value != 2000 {
+			t.Errorf("Expected tx=2000 reported as downlink, got %d", s.Value)
 		}
 	}
 }
@@ -48,11 +48,11 @@ func TestStatsTracker_GetStatsReset(t *testing.T) {
 
 	resp := tracker.GetStats(ctx, []string{"key1"}, true)
 	for _, s := range resp.Stats {
-		if s.Type == "downlink" && s.Value != 2000 {
-			t.Errorf("Expected rx=2000, got %d", s.Value)
+		if s.Type == "uplink" && s.Value != 2000 {
+			t.Errorf("Expected rx=2000 reported as uplink, got %d", s.Value)
 		}
-		if s.Type == "uplink" && s.Value != 4000 {
-			t.Errorf("Expected tx=4000, got %d", s.Value)
+		if s.Type == "downlink" && s.Value != 4000 {
+			t.Errorf("Expected tx=4000 reported as downlink, got %d", s.Value)
 		}
 	}
 
@@ -205,11 +205,11 @@ func TestStatsTracker_ReaddAfterDeletePreservesPendingDelta(t *testing.T) {
 
 	resp := tracker.GetStats(ctx, []string{"key1"}, false)
 	for _, s := range resp.Stats {
-		if s.Type == "downlink" && s.Value != 1000 {
-			t.Errorf("Expected preserved rx=1000, got %d", s.Value)
+		if s.Type == "uplink" && s.Value != 1000 {
+			t.Errorf("Expected preserved rx=1000 reported as uplink, got %d", s.Value)
 		}
-		if s.Type == "uplink" && s.Value != 2000 {
-			t.Errorf("Expected preserved tx=2000, got %d", s.Value)
+		if s.Type == "downlink" && s.Value != 2000 {
+			t.Errorf("Expected preserved tx=2000 reported as downlink, got %d", s.Value)
 		}
 	}
 
