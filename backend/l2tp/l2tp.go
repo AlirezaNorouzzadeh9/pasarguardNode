@@ -8,7 +8,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/pasarguard/node/backend/ipsec"
@@ -286,17 +285,11 @@ func (o *L2TP) killSessions(usernames []string) {
 		if s.tag != "" && s.tag != o.config.InboundTag {
 			continue
 		}
-		// readSessions has already dropped records whose pppd is gone, but the
-		// signal is only safe if the pid is still that pppd right now: an
-		// os.FindProcess handle proves nothing on Unix, and a number the kernel
-		// has recycled would take the signal instead.
-		if !processIsPppd(s.pid) {
-			continue
-		}
-		if p, err := os.FindProcess(s.pid); err == nil {
-			if err := p.Signal(syscall.SIGTERM); err == nil {
-				o.emitLogf("Info", "l2tp: terminated revoked user %s's session (%s)", s.user, s.ifname)
-			}
+		// signalSession re-checks that the pid is still that pppd: being listed
+		// is not proof, an os.FindProcess handle proves nothing on Unix, and a
+		// number the kernel has recycled would take the signal instead.
+		if signalSession(s) {
+			o.emitLogf("Info", "l2tp: terminated revoked user %s's session (%s)", s.user, s.ifname)
 		}
 	}
 }

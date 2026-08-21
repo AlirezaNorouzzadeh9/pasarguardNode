@@ -11,6 +11,8 @@ import (
 type userEntry struct {
 	serial      string
 	fingerprint string
+	// How many sessions this user may hold at once. Zero means no limit.
+	ipLimit uint32
 }
 
 // userStore is the authorized-user allowlist consulted by the management client.
@@ -58,7 +60,8 @@ func (s *userStore) authorizedLocked(commonName, serial string) bool {
 func (s *userStore) tryConnect(commonName, serial, clientID string) (bool, string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if !s.authorizedLocked(commonName, serial) {
+	entry, ok := s.users[commonName]
+	if !ok || (entry.serial != "" && entry.serial != serial) {
 		return false, "unauthorized"
 	}
 	set := s.sessions[commonName]
@@ -68,6 +71,12 @@ func (s *userStore) tryConnect(commonName, serial, clientID string) (bool, strin
 	}
 	if _, exists := set[clientID]; exists {
 		return true, "" // REAUTH of a session we already count
+	}
+	// The newest connection is the one that gives way: the sessions already
+	// running belong to someone who is using the service, and dropping one of
+	// them to admit a newcomer would interrupt the wrong person.
+	if entry.ipLimit > 0 && uint32(len(set)) >= entry.ipLimit {
+		return false, "connection limit reached"
 	}
 	set[clientID] = struct{}{}
 	return true, ""
@@ -111,7 +120,7 @@ func (s *userStore) applyUser(u *common.User) (cn string, changedSerial bool, re
 	}
 
 	ov := u.GetProxies().GetOpenvpn()
-	entry := userEntry{serial: ov.GetSerial(), fingerprint: ov.GetFingerprint()}
+	entry := userEntry{serial: ov.GetSerial(), fingerprint: ov.GetFingerprint(), ipLimit: u.GetIpLimit()}
 
 	s.mu.Lock()
 	prev, existed := s.users[cn]
@@ -134,7 +143,7 @@ func (s *userStore) replaceAll(users []*common.User) (removed []string) {
 			continue
 		}
 		ov := u.GetProxies().GetOpenvpn()
-		next[cn] = userEntry{serial: ov.GetSerial(), fingerprint: ov.GetFingerprint()}
+		next[cn] = userEntry{serial: ov.GetSerial(), fingerprint: ov.GetFingerprint(), ipLimit: u.GetIpLimit()}
 	}
 
 	s.mu.Lock()

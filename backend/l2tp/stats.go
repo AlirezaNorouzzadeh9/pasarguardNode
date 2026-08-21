@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"runtime"
+	"sort"
 	"time"
 
 	"github.com/pasarguard/node/common"
@@ -151,6 +152,39 @@ func (o *L2TP) poll() {
 
 	if len(samples) > 0 {
 		o.statsTracker.UpdateStatsBatch(samples)
+	}
+
+	o.enforceSessionLimits(perUser)
+}
+
+// enforceSessionLimits hangs up the sessions a user is over their limit by.
+//
+// pppd authenticates against chap-secrets on its own, with no hook this process
+// sits in, so a session cannot be refused as it is made — it can only be ended
+// once seen, within one poll interval. The newest are the ones to go: the
+// sessions already running belong to someone using the service, and ending one
+// of those to make room for a newcomer interrupts the wrong person.
+func (o *L2TP) enforceSessionLimits(perUser map[string][]l2tpSession) {
+	if o.users == nil {
+		return
+	}
+	for user, sessions := range perUser {
+		limit := o.users.limitFor(user)
+		if limit == 0 || len(sessions) <= int(limit) {
+			continue
+		}
+
+		// Oldest first, so everything past the limit is the newest.
+		ordered := make([]l2tpSession, len(sessions))
+		copy(ordered, sessions)
+		sort.SliceStable(ordered, func(i, j int) bool { return ordered[i].started < ordered[j].started })
+
+		for _, session := range ordered[limit:] {
+			if signalSession(session) {
+				o.emitLogf("Info", "l2tp: %s is over their %d-session limit; ended the newest (%s)",
+					user, limit, session.ifname)
+			}
+		}
 	}
 }
 

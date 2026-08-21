@@ -14,6 +14,8 @@ import (
 
 type userEntry struct {
 	password string
+	// Sessions this user may hold at once. Zero means no limit.
+	ipLimit uint32
 }
 
 type userStore struct {
@@ -50,7 +52,7 @@ func (s *userStore) replaceAll(users []*common.User) (removed []string) {
 			continue
 		}
 		username, password, _ := credsFor(u)
-		next[username] = userEntry{password: password}
+		next[username] = userEntry{password: password, ipLimit: u.GetIpLimit()}
 	}
 
 	s.mu.Lock()
@@ -77,7 +79,7 @@ func (s *userStore) applyUser(u *common.User) (username string, changed bool, re
 		return username, false, existed
 	}
 	username, password, _ := credsFor(u)
-	entry := userEntry{password: password}
+	entry := userEntry{password: password, ipLimit: u.GetIpLimit()}
 	s.mu.Lock()
 	prev, existed := s.users[username]
 	s.users[username] = entry
@@ -93,4 +95,11 @@ func (s *userStore) snapshot() map[string]userEntry {
 		out[k] = v
 	}
 	return out
+}
+
+// limitFor returns how many sessions a user may hold at once, 0 meaning no limit.
+func (s *userStore) limitFor(username string) uint32 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.users[username].ipLimit
 }

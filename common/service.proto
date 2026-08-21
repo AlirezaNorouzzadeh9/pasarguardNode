@@ -179,6 +179,10 @@ message User {
     string email = 1;
     Proxy proxies = 2;
     repeated string inbounds = 3;
+    // How many connections this user may hold at once, across every backend and
+    // every node. 0 means no limit, which is also what an older panel that does
+    // not set the field sends.
+    uint32 ip_limit = 4;
 }
 
 message Users {

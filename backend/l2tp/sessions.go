@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 )
 
 // sessionStateDir is where the pppd ip-up/ip-down hooks record one file per live
@@ -205,4 +206,19 @@ func readCounter(path string) int64 {
 	}
 	n, _ := strconv.ParseInt(strings.TrimSpace(string(b)), 10, 64)
 	return n
+}
+
+// signalSession asks a session's pppd to hang up. pppd tears the link down on
+// SIGTERM and runs the ip-down hook, which settles the traffic and removes the
+// record. A package variable so a test can watch the decision without a live
+// pppd to send a real signal to.
+var signalSession = func(s l2tpSession) bool {
+	if s.pid <= 0 || !processIsPppd(s.pid) {
+		return false
+	}
+	p, err := os.FindProcess(s.pid)
+	if err != nil {
+		return false
+	}
+	return p.Signal(syscall.SIGTERM) == nil
 }
