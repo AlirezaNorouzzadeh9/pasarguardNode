@@ -1,0 +1,36 @@
+From beaa3c812992b99931471990de1acdec213f6412 Mon Sep 17 00:00:00 2001
+From: pasarguard <dev@pasarguard.local>
+Date: Fri, 21 Aug 2026 23:00:06 +0000
+Subject: [PATCH] feat(clashapi): report which user a connection belongs to
+
+Every connection the clash API lists already knows its user: the inbound
+resolves the authenticated name and puts it on the InboundContext, which the
+tracker keeps whole. The JSON it hands out simply leaves the field behind.
+
+That one omission is the difference between a connection list and a per-user
+connection list. Without it the node can see that a connection exists and
+where it came from, but not whose it is, so a per-user connection limit has
+nothing to count, and closing a user's newest connection cannot be expressed
+at all.
+---
+ experimental/clashapi/trafficontrol/tracker.go | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/experimental/clashapi/trafficontrol/tracker.go b/experimental/clashapi/trafficontrol/tracker.go
+index f001b77..81e40e4 100644
+--- a/experimental/clashapi/trafficontrol/tracker.go
++++ b/experimental/clashapi/trafficontrol/tracker.go
+@@ -67,6 +67,10 @@ func (t TrackerMetadata) MarshalJSON() ([]byte, error) {
+ 	return json.Marshal(map[string]any{
+ 		"id": t.ID,
+ 		"metadata": map[string]any{
++			// Empty on an inbound that authenticates nobody, so this is added
++			// rather than replacing anything: a reader that does not care sees
++			// the same object it saw before.
++			"user":            t.Metadata.User,
+ 			"network":         t.Metadata.Network,
+ 			"type":            inbound,
+ 			"sourceIP":        t.Metadata.Source.Addr,
+-- 
+2.52.0
+

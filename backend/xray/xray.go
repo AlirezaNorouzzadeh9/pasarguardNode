@@ -49,7 +49,10 @@ func New(ctx context.Context, xrayConfig *Config, users []*common.User, apiPort,
 		metricPort: metricPort,
 		ipLimits:   newIPLimiter(),
 	}
-	go xray.limitLoop(ctx)
+	// xCtx, not ctx: the caller's context belongs to the Start RPC and is
+	// cancelled the moment it returns, which would end the loop before it ever
+	// ticked.
+	go xray.limitLoop(xCtx)
 
 	start := time.Now()
 
@@ -60,6 +63,12 @@ func New(ctx context.Context, xrayConfig *Config, users []*common.User, apiPort,
 	if len(users) > 0 {
 		log.Printf("syncing %d users on startup", len(users))
 		xrayConfig.syncUsers(users)
+		// The startup set never passes through SyncUsers, so without this a
+		// restart would forget every limit until each user happened to be
+		// synced again for some unrelated reason.
+		for _, user := range users {
+			xray.ipLimits.track(user)
+		}
 		// Verify users were synced by counting clients in all inbounds
 		totalClients := 0
 		for _, inbound := range xrayConfig.InboundConfigs {
