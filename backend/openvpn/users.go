@@ -13,6 +13,15 @@ type userEntry struct {
 	fingerprint string
 	// How many sessions this user may hold at once. Zero means no limit.
 	ipLimit uint32
+	// Per-direction throughput cap in kbit/s. Zero means unshaped.
+	speedLimit uint32
+}
+
+// speedLimitFor returns the per-direction cap for a common name (0 = unlimited).
+func (s *userStore) speedLimitFor(commonName string) uint32 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.users[commonName].speedLimit
 }
 
 // userStore is the authorized-user allowlist consulted by the management client.
@@ -120,7 +129,7 @@ func (s *userStore) applyUser(u *common.User) (cn string, changedSerial bool, re
 	}
 
 	ov := u.GetProxies().GetOpenvpn()
-	entry := userEntry{serial: ov.GetSerial(), fingerprint: ov.GetFingerprint(), ipLimit: u.GetIpLimit()}
+	entry := userEntry{serial: ov.GetSerial(), fingerprint: ov.GetFingerprint(), ipLimit: u.GetIpLimit(), speedLimit: u.GetSpeedLimit()}
 
 	s.mu.Lock()
 	prev, existed := s.users[cn]
@@ -143,7 +152,7 @@ func (s *userStore) replaceAll(users []*common.User) (removed []string) {
 			continue
 		}
 		ov := u.GetProxies().GetOpenvpn()
-		next[cn] = userEntry{serial: ov.GetSerial(), fingerprint: ov.GetFingerprint(), ipLimit: u.GetIpLimit()}
+		next[cn] = userEntry{serial: ov.GetSerial(), fingerprint: ov.GetFingerprint(), ipLimit: u.GetIpLimit(), speedLimit: u.GetSpeedLimit()}
 	}
 
 	s.mu.Lock()

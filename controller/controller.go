@@ -14,6 +14,7 @@ import (
 	"github.com/pasarguard/node/backend"
 	"github.com/pasarguard/node/backend/openvpn"
 	"github.com/pasarguard/node/backend/l2tp"
+	"github.com/pasarguard/node/backend/ratelimit"
 	"github.com/pasarguard/node/backend/singbox"
 	"github.com/pasarguard/node/backend/wireguard"
 	"github.com/pasarguard/node/backend/xray"
@@ -51,6 +52,9 @@ type Controller struct {
 	cancelFunc  context.CancelFunc
 	mu          sync.RWMutex
 	controlMu   sync.Mutex
+	// shaper applies per-user speed limits with tc; nil until a limited client
+	// first appears, so nodes that never use speed limits set up nothing.
+	shaper *ratelimit.Manager
 }
 
 func New(cfg *config.Config) *Controller {
@@ -86,6 +90,7 @@ func (c *Controller) Connect(ip string, keepAlive uint64) {
 
 func (c *Controller) Disconnect() {
 	c.cancelFunc()
+	c.closeShaping()
 
 	c.mu.Lock()
 	running := make([]backend.Backend, 0, len(c.backends))
@@ -400,6 +405,7 @@ func (c *Controller) recordSystemStats(ctx context.Context) {
 	}
 
 	collect()
+	c.refreshShaping()
 
 	for {
 		select {
@@ -407,6 +413,7 @@ func (c *Controller) recordSystemStats(ctx context.Context) {
 			return
 		case <-ticker.C:
 			collect()
+			c.refreshShaping()
 		}
 	}
 }

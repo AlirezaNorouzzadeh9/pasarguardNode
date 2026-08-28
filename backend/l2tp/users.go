@@ -16,6 +16,15 @@ type userEntry struct {
 	password string
 	// Sessions this user may hold at once. Zero means no limit.
 	ipLimit uint32
+	// Per-direction throughput cap in kbit/s. Zero means unshaped.
+	speedLimit uint32
+}
+
+// speedLimitFor returns the per-direction cap for a username (0 = unlimited).
+func (s *userStore) speedLimitFor(username string) uint32 {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.users[username].speedLimit
 }
 
 type userStore struct {
@@ -52,7 +61,7 @@ func (s *userStore) replaceAll(users []*common.User) (removed []string) {
 			continue
 		}
 		username, password, _ := credsFor(u)
-		next[username] = userEntry{password: password, ipLimit: u.GetIpLimit()}
+		next[username] = userEntry{password: password, ipLimit: u.GetIpLimit(), speedLimit: u.GetSpeedLimit()}
 	}
 
 	s.mu.Lock()
@@ -79,7 +88,7 @@ func (s *userStore) applyUser(u *common.User) (username string, changed bool, re
 		return username, false, existed
 	}
 	username, password, _ := credsFor(u)
-	entry := userEntry{password: password, ipLimit: u.GetIpLimit()}
+	entry := userEntry{password: password, ipLimit: u.GetIpLimit(), speedLimit: u.GetSpeedLimit()}
 	s.mu.Lock()
 	prev, existed := s.users[username]
 	s.users[username] = entry

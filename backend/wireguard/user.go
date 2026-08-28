@@ -14,6 +14,8 @@ func (wg *WireGuard) SyncUser(_ context.Context, user *common.User) error {
 		return fmt.Errorf("user is nil")
 	}
 
+	wg.recordSpeeds([]*common.User{user}, false)
+
 	wg.syncMu.Lock()
 	defer wg.syncMu.Unlock()
 
@@ -22,6 +24,8 @@ func (wg *WireGuard) SyncUser(_ context.Context, user *common.User) error {
 
 // SyncUsers synchronizes multiple users to the WireGuard interface.
 func (wg *WireGuard) SyncUsers(_ context.Context, users []*common.User) error {
+	wg.recordSpeeds(users, true)
+
 	wg.syncMu.Lock()
 	defer wg.syncMu.Unlock()
 
@@ -30,6 +34,8 @@ func (wg *WireGuard) SyncUsers(_ context.Context, users []*common.User) error {
 
 // UpdateUsers performs partial reconciliation for users provided in the request.
 func (wg *WireGuard) UpdateUsers(_ context.Context, users []*common.User) error {
+	wg.recordSpeeds(users, false)
+
 	wg.syncMu.Lock()
 	defer wg.syncMu.Unlock()
 
@@ -39,6 +45,8 @@ func (wg *WireGuard) UpdateUsers(_ context.Context, users []*common.User) error 
 // UpdateUsersAndRestart applies targeted user updates, then rebuilds the full
 // peer snapshot so interface-wide settings like keepalive are reapplied to all peers.
 func (wg *WireGuard) UpdateUsersAndRestart(_ context.Context, users []*common.User) error {
+	wg.recordSpeeds(users, false)
+
 	wg.syncMu.Lock()
 	defer wg.syncMu.Unlock()
 

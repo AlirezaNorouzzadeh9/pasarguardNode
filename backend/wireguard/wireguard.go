@@ -65,6 +65,12 @@ type WireGuard struct {
 	lastStatsErrAt time.Time
 	newManager     newManagerFunc
 	hostRouting    func()
+
+	// userSpeed holds each synced user's per-direction cap in kbit/s (0 or
+	// absent = unshaped), for the node's traffic shaper. Guarded by speedMu
+	// rather than syncMu so ShapedClients never waits on a peer reconcile.
+	speedMu   sync.Mutex
+	userSpeed map[string]uint32
 }
 
 // getWireGuardVersion fetches the wireguard-tools version

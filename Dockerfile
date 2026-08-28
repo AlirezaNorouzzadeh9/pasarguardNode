@@ -60,7 +60,7 @@ COPY --from=singbox /out/sing-box /usr/local/bin/sing-box
 # runtime binary only shows up when a user tries to connect, long after the node
 # has reported itself healthy.
 RUN set -e; \
-    for bin in wg nft ip openvpn iptables sing-box swanctl xl2tpd pppd; do \
+    for bin in wg nft ip tc openvpn iptables sing-box swanctl xl2tpd pppd; do \
         command -v "$bin" >/dev/null || { echo "missing runtime dependency: $bin" >&2; exit 1; }; \
     done; \
     # charon is a daemon, not on PATH; the backend probes these two locations.
