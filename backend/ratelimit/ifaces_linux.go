@@ -8,9 +8,11 @@ import (
 )
 
 // tunnelPrefixes are the interface name prefixes a client's download leaves by.
-// WireGuard uses its configured name (wg…), OpenVPN a tun device, IPsec has no
-// interface (its download egresses the main interface encrypted).
-var tunnelPrefixes = []string{"wg", "tun", "ipsec", "gre"}
+// WireGuard uses its configured name (wg…), OpenVPN a tun device, L2TP a ppp
+// device per session — xl2tpd re-encapsulates in userspace, so the fwmark dies
+// with the inner packet and the cap must sit on the ppp interface itself.
+// IPsec has no interface (its download egresses the main interface encrypted).
+var tunnelPrefixes = []string{"wg", "tun", "ppp", "ipsec", "gre"}
 
 // shapingInterfaces lists the interfaces a class tree must hang on: the egress
 // (upload leaves here) plus every up tunnel interface (download leaves there).
