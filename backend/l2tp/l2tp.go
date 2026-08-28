@@ -231,9 +231,11 @@ func (o *L2TP) SyncUser(ctx context.Context, user *common.User) error {
 }
 
 func (o *L2TP) SyncUsers(ctx context.Context, users []*common.User) error {
-	removed := o.users.replaceAll(users)
+	removed, rotated := o.users.replaceAll(users)
 	err := o.reloadUsers()
-	o.killSessions(removed)
+	// A rotated password is a revoke: the live session was authenticated with
+	// the old one and must not outlive it.
+	o.killSessions(append(removed, rotated...))
 	return err
 }
 
@@ -250,7 +252,7 @@ func (o *L2TP) UpdateUsersAndRestart(ctx context.Context, users []*common.User) 
 func (o *L2TP) applyUsers(users []*common.User) error {
 	var revoked []string
 	for _, u := range users {
-		if username, _, removed := o.users.applyUser(u); removed {
+		if username, rotated, removed := o.users.applyUser(u); removed || rotated {
 			revoked = append(revoked, username)
 		}
 	}

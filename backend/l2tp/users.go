@@ -52,9 +52,11 @@ func (s *userStore) wantsInterface(u *common.User) bool {
 	return slices.Contains(u.GetInbounds(), s.inboundTag)
 }
 
-// replaceAll rebuilds the store from an authoritative user list and returns the
-// usernames no longer present (so their chap-secrets entries can be removed).
-func (s *userStore) replaceAll(users []*common.User) (removed []string) {
+// replaceAll rebuilds the store from an authoritative user list. It returns the
+// usernames no longer present (so their chap-secrets entries can be removed)
+// and the ones whose password was rotated — a revoke: their live sessions
+// authenticated with the old password and must not outlive it.
+func (s *userStore) replaceAll(users []*common.User) (removed, rotated []string) {
 	next := make(map[string]userEntry)
 	for _, u := range users {
 		if !s.wantsInterface(u) {
@@ -65,17 +67,25 @@ func (s *userStore) replaceAll(users []*common.User) (removed []string) {
 	}
 
 	s.mu.Lock()
-	for username := range s.users {
-		if _, ok := next[username]; !ok {
+	for username, prev := range s.users {
+		entry, ok := next[username]
+		if !ok {
 			removed = append(removed, username)
+		} else if prev.password != entry.password {
+			rotated = append(rotated, username)
 		}
 	}
 	s.users = next
 	s.mu.Unlock()
-	return removed
+	return removed, rotated
 }
 
-func (s *userStore) applyUser(u *common.User) (username string, changed bool, removed bool) {
+// applyUser upserts one user. rotated is true when an existing user's password
+// changed (a revoke): their live sessions were authenticated with the old
+// password and must be torn down, exactly as openvpn kills on a changed serial.
+// A limit change alone never counts — cutting a session because the operator
+// adjusted a cap would disconnect the wrong person for the wrong reason.
+func (s *userStore) applyUser(u *common.User) (username string, rotated bool, removed bool) {
 	if !s.wantsInterface(u) {
 		username = u.GetEmail()
 		if username == "" {
@@ -93,7 +103,7 @@ func (s *userStore) applyUser(u *common.User) (username string, changed bool, re
 	prev, existed := s.users[username]
 	s.users[username] = entry
 	s.mu.Unlock()
-	return username, !existed || prev != entry, false
+	return username, existed && prev.password != entry.password, false
 }
 
 func (s *userStore) snapshot() map[string]userEntry {
