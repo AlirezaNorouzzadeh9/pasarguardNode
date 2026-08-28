@@ -164,6 +164,9 @@ func newWithManagerFactory(cfg *config.Config, wgConfig *Config, users []*common
 	}
 
 	normalizedUsers := normalizeUsers(users)
+	// The startup user list bypasses SyncUsers, so their speed caps must be
+	// recorded here or nobody is shaped until the panel's next user sync.
+	wg.recordSpeeds(normalizedUsers, true)
 	startupExistingByKey := wg.buildExistingPeersByKeySnapshot()
 	startupDesiredPeers, err := wg.collectDesiredPeers(normalizedUsers)
 	if err != nil {
