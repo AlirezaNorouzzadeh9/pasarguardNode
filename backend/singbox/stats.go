@@ -30,38 +30,75 @@ type statsClient struct {
 	// where the counters nobody asked for wait for the caller who wants them.
 	pendingMu sync.Mutex
 	pending   map[string]int64
+	// The cumulative value each counter last held, so collect can bill only the
+	// growth since the previous read instead of resetting. See collect.
+	baseline map[string]int64
 }
 
 func newStatsClient(target string) *statsClient {
-	return &statsClient{target: target, pending: make(map[string]int64)}
+	return &statsClient{target: target, pending: make(map[string]int64), baseline: make(map[string]int64)}
 }
 
-// collect drains sing-box's counters into pending.
+// collect folds the growth of sing-box's counters into pending.
 //
-// sing-box ignores the query pattern and answers with every counter it holds,
-// and its reset is all-or-nothing to match. So a poll for one kind of counter
-// zeroes every other kind at the same time — and the counters the caller did
-// not ask for are not merely skipped, they are destroyed.
+// It reads them CUMULATIVELY — reset=false — and bills only the increase over
+// the value each counter last held (the baseline). This replaces the old
+// read-and-reset, which was unusable for two reasons that both cost real money:
 //
-// The panel polls user usage every 10s and outbound usage every 30s, both
-// resetting. Each poll therefore threw away whatever the other had not read
-// yet, and a user's traffic vanished whenever the outbound poll landed first:
-// a full megabyte at a time, attributed to nobody, with every part of the
-// system reporting success.
+//   - sing-box ignores the query pattern and its reset is all-or-nothing, so a
+//     poll for one kind of counter destroyed every other kind at the same time;
+//     a user's traffic vanished whenever the outbound poll landed first.
 //
-// So the reset happens exactly once, here, and everything it returns is kept.
-// A caller then takes only its own counters, and the rest stay for theirs.
+//   - a name's counter is not cleared when its user is removed, so if the same
+//     name was created again the very next read billed the new account the old
+//     holder's entire total at once — a phantom drain of a user who never even
+//     connected to the node.
+//
+// A cumulative read fixes both: nothing is destroyed (no reset), and a re-used
+// name keeps its baseline, so its delta is zero until it actually moves traffic
+// again. First sight of a counter is baselined WITHOUT billing, precisely so an
+// existing total is never charged to whoever the name belongs to now. A value
+// that has dropped below its baseline means sing-box restarted (counters back to
+// zero), so the whole current value is new traffic since that restart.
 func (s *statsClient) collect(ctx context.Context) error {
-	stats, err := s.query(ctx, "", true)
+	stats, err := s.query(ctx, "", false)
 	if err != nil {
 		return err
 	}
+	s.fold(stats)
+	return nil
+}
+
+// fold turns cumulative counter values into billable growth against the
+// baseline. Split out from collect so the accounting can be tested without a
+// live sing-box.
+func (s *statsClient) fold(stats []*statsapi.Stat) {
 	s.pendingMu.Lock()
 	defer s.pendingMu.Unlock()
-	for _, stat := range stats {
-		s.pending[stat.GetName()] += stat.GetValue()
+	if s.baseline == nil {
+		s.baseline = make(map[string]int64)
 	}
-	return nil
+	for _, stat := range stats {
+		name := stat.GetName()
+		cur := stat.GetValue()
+		prev, seen := s.baseline[name]
+		s.baseline[name] = cur
+		switch {
+		case !seen:
+			// First time seen: baseline only, never bill. A counter may already
+			// hold a departed account's total.
+		case cur < prev:
+			// sing-box restarted; the counter reset. Everything it holds now is
+			// new traffic since the restart.
+			if cur > 0 {
+				s.pending[name] += cur
+			}
+		default:
+			if d := cur - prev; d > 0 {
+				s.pending[name] += d
+			}
+		}
+	}
 }
 
 // take returns the pending counters matching prefix, removing them if the
